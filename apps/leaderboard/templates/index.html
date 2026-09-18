@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Rosetta MLE Leaderboard</title>
+  <style>
+    :root {
+      --bg: #0b1220;
+      --card: #121a2b;
+      --text: #e8eefc;
+      --muted: #9aa8c7;
+      --accent: #6ea8fe;
+      --good: #3ddc97;
+      --warn: #ffd166;
+      --border: #243049;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+      background: radial-gradient(1200px 600px at 10% -10%, #1a2744, var(--bg));
+      color: var(--text);
+      line-height: 1.45;
+    }
+    header {
+      padding: 2rem 1.5rem 1rem;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+    h1 { margin: 0 0 0.25rem; font-size: 1.8rem; letter-spacing: -0.02em; }
+    .sub { color: var(--muted); }
+    main { max-width: 1100px; margin: 0 auto; padding: 0 1.5rem 3rem; }
+    .grid { display: grid; gap: 1.25rem; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+    .card {
+      background: color-mix(in srgb, var(--card) 92%, black);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow: 0 10px 30px rgba(0,0,0,.25);
+    }
+    .card h2 {
+      margin: 0;
+      padding: 0.9rem 1rem;
+      font-size: 1rem;
+      border-bottom: 1px solid var(--border);
+      background: #0f1728;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+    th, td { padding: 0.55rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    tr:hover td { background: rgba(110,168,254,0.06); }
+    .num { font-variant-numeric: tabular-nums; font-family: "IBM Plex Mono", ui-monospace, monospace; }
+    .league { color: var(--accent); font-weight: 600; }
+    .band { color: var(--muted); font-size: 0.8rem; }
+    .error { background: #3a1d1d; border: 1px solid #7a3030; padding: 1rem; border-radius: 10px; }
+    footer { color: var(--muted); max-width: 1100px; margin: 0 auto; padding: 0 1.5rem 2rem; font-size: 0.85rem; }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Rosetta MLE Leaderboard</h1>
+    <p class="sub">Foreign-league performance translated to MLB-equivalent rates
+      {% if season %}· season {{ season }}{% endif %}
+    </p>
+  </header>
+  <main>
+    {% if error %}
+      <p class="error">{{ error }}</p>
+    {% endif %}
+    <div class="grid">
+      <section class="card">
+        <h2>Hitters by MLE wOBA</h2>
+        <table>
+          <thead>
+            <tr><th>#</th><th>Player</th><th>Lg</th><th>wOBA</th><th>80% band</th></tr>
+          </thead>
+          <tbody>
+            {% for p in batters %}
+            <tr>
+              <td class="num">{{ loop.index }}</td>
+              <td>{{ p.player_name }}</td>
+              <td class="league">{{ p.from_league }}</td>
+              <td class="num">{{ '%.3f'|format(p.woba or 0) }}</td>
+              <td class="num band">{{ '%.3f'|format(p.woba_low or 0) }}–{{ '%.3f'|format(p.woba_high or 0) }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5">No batters — run <code>make leaderboard</code></td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+      <section class="card">
+        <h2>Pitchers by MLE FIP</h2>
+        <table>
+          <thead>
+            <tr><th>#</th><th>Player</th><th>Lg</th><th>FIP</th><th>80% band</th></tr>
+          </thead>
+          <tbody>
+            {% for p in pitchers %}
+            <tr>
+              <td class="num">{{ loop.index }}</td>
+              <td>{{ p.player_name }}</td>
+              <td class="league">{{ p.from_league }}</td>
+              <td class="num">{{ '%.2f'|format(p.fip or 0) }}</td>
+              <td class="num band">{{ '%.2f'|format(p.fip_low or 0) }}–{{ '%.2f'|format(p.fip_high or 0) }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5">No pitchers — run <code>make leaderboard</code></td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+    </div>
+  </main>
+  <footer>
+    Uncertainty bands come from bootstrap of the transferred-player cohort.
+    Thin leagues (CPBL/Cuba) intentionally show wide intervals.
+    <a href="/api/leaderboard">JSON API</a>
+  </footer>
+</body>
+</html>
