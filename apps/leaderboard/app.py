@@ -36,6 +36,7 @@ def index(request: Request) -> HTMLResponse:
         "index.html",
         {
             "season": data.get("season"),
+            "data_mode": data.get("data_mode", "unknown"),
             "batters": batters,
             "pitchers": pitchers,
             "error": data.get("error"),

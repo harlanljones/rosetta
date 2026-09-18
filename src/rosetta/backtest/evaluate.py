@@ -28,13 +28,14 @@ def run_backtest(
     holdout_season_from: int = 2023,
     n_boot: int = 300,
     out_path: Path | str | None = None,
+    chadwick_path: Path | None = None,
 ) -> dict:
     """Fit on pre-holdout movers; score holdout pairs.
 
     Returns metrics dict and optionally writes JSON.
     """
     snapshot_dir = Path(snapshot_dir) if snapshot_dir else None
-    cohort = build_cohort(snapshot_dir)
+    cohort = build_cohort(snapshot_dir, chadwick_path=chadwick_path)
     if cohort.empty:
         raise RuntimeError("Empty cohort — generate snapshots first")
 
@@ -88,6 +89,7 @@ def run_backtest(
                     "stat": s,
                     "from_league": rec["from_league"],
                     "to_league": rec["to_league"],
+                    "is_mlb_target": bool(rec["to_league"] == "MLB"),
                     "y_true": y_true,
                     "y_pred": y_pred,
                     "lo": lo,
@@ -101,7 +103,16 @@ def run_backtest(
     n_pairs = int(
         holdout[["player_id", "from_league", "to_league"]].drop_duplicates().shape[0]
     )
-    metrics: dict = {"n_holdout_pairs": n_pairs, "by_stat": {}}
+    n_mlb_pairs = int(
+        holdout.loc[holdout["to_league"] == "MLB", ["player_id", "from_league", "to_league"]]
+        .drop_duplicates()
+        .shape[0]
+    )
+    metrics: dict = {
+        "n_holdout_pairs": n_pairs,
+        "n_holdout_pairs_mlb_target": n_mlb_pairs,
+        "by_stat": {},
+    }
     if detail.empty:
         metrics["warning"] = "No holdout rows scored"
     else:
@@ -124,6 +135,30 @@ def run_backtest(
             metrics["headline_fip_coverage80"] = metrics["by_stat"]["fip"]["coverage_80"]
         if "era" in metrics["by_stat"]:
             metrics["headline_era_rmse"] = metrics["by_stat"]["era"]["rmse"]
+        # Spec §4 scores MLB-target transfers; report the MLB-only slice alongside
+        # the pooled numbers so intermediate-link pairs don't inflate the headline.
+        mlb = detail[detail["is_mlb_target"]]
+        if not mlb.empty:
+            mlb_stats: dict = {}
+            for stat, g in mlb.groupby("stat"):
+                yt = g["y_true"].to_numpy()
+                yp = g["y_pred"].to_numpy()
+                mlb_stats[str(stat)] = {
+                    "n": int(len(g)),
+                    "rmse": _rmse(yt, yp),
+                    "mae": _mae(yt, yp),
+                    "coverage_80": float(g["covered_80"].mean()),
+                }
+            metrics["by_stat_mlb_target"] = mlb_stats
+            if "woba" in mlb_stats:
+                metrics["headline_woba_rmse_mlb"] = mlb_stats["woba"]["rmse"]
+                metrics["headline_woba_coverage80_mlb"] = mlb_stats["woba"]["coverage_80"]
+            if "fip" in mlb_stats:
+                metrics["headline_fip_rmse_mlb"] = mlb_stats["fip"]["rmse"]
+        metrics["by_to_league"] = {
+            str(lg): int(n)
+            for lg, n in detail.groupby("to_league").size().items()
+        }
 
     metrics["model_n_links"] = {
         role: list(links.keys()) for role, links in model.links.items()

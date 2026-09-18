@@ -8,6 +8,7 @@ import pandas as pd
 
 from rosetta.ingest.loaders import load_all_seasons
 from rosetta.models.factors import HITTER_STATS, PITCHER_STATS, LeagueFactorModel
+from rosetta.models.role import apply_role_shift, detect_role, role_shift
 from rosetta.schema import League, Role, TranslationResult
 
 
@@ -32,6 +33,7 @@ def translate_line(
     model: LeagueFactorModel,
     from_league: str | None = None,
     to_league: str = "MLB",
+    target_pitch_role: str | None = None,
 ) -> TranslationResult:
     """Translate one normalized season line to the target league."""
     if isinstance(line, dict):
@@ -60,6 +62,26 @@ def translate_line(
         floor = 0.0 if stat not in {"era", "fip"} else 0.5
         lower[stat] = max(floor, center - half)
         upper[stat] = center + half
+
+    # Pitcher role adjustment (SP<->RP): applied after league translation so the
+    # role module is part of the pipeline, not dead code. No shift when the
+    # source role is unknown or no target role is declared.
+    if role == "pitcher" and target_pitch_role in ("SP", "RP"):
+        try:
+            gs = line.get("gs", None)
+            g = line.get("g", None)
+            src_role = detect_role(
+                float(gs) if gs is not None and not pd.isna(gs) else None,
+                float(g) if g is not None and not pd.isna(g) else None,
+            )
+        except (TypeError, ValueError):
+            src_role = "unknown"
+        shift = role_shift(src_role, target_pitch_role)  # type: ignore[arg-type]
+        if any((shift.k_pct, shift.bb_pct, shift.hr_fb, shift.fip, shift.era)):
+            rates = apply_role_shift(rates, shift)
+            lower = apply_role_shift(lower, shift)
+            upper = apply_role_shift(upper, shift)
+            notes.append(f"Role adjustment applied: {src_role}→{target_pitch_role}.")
 
     # Count movers along path for transparency
     n_movers = 0
@@ -121,6 +143,7 @@ def translate(
     factors_path: Path | str | None = None,
     snapshot_dir: Path | str | None = None,
     to_league: str = "MLB",
+    target_pitch_role: str | None = None,
 ) -> TranslationResult:
     """Public API: translate a player-season from `from_league` to MLB (default).
 
@@ -143,7 +166,13 @@ def translate(
         if sub.empty:
             raise LookupError(f"No season {season} for {player!r} in {from_league}")
     line = sub.sort_values("season").iloc[-1]
-    return translate_line(line, model=model, from_league=from_league, to_league=to_league)
+    return translate_line(
+        line,
+        model=model,
+        from_league=from_league,
+        to_league=to_league,
+        target_pitch_role=target_pitch_role,
+    )
 
 
 def translate_frame(
@@ -152,11 +181,18 @@ def translate_frame(
     model: LeagueFactorModel,
     from_league_col: str = "league",
     to_league: str = "MLB",
+    target_pitch_role: str | None = None,
 ) -> pd.DataFrame:
     """Vectorized convenience: translate each row, return flat DataFrame."""
     records = []
     for _, row in df.iterrows():
-        tr = translate_line(row, model=model, from_league=str(row[from_league_col]), to_league=to_league)
+        tr = translate_line(
+            row,
+            model=model,
+            from_league=str(row[from_league_col]),
+            to_league=to_league,
+            target_pitch_role=target_pitch_role,
+        )
         flat = tr.model_dump()
         rates = flat.pop("rates")
         lower = flat.pop("lower")

@@ -8,6 +8,7 @@ __pycache__/
 dist/
 build/
 data/outputs/
+data/raw/
 .coverage
 htmlcov/
 .DS_Store

@@ -76,6 +76,19 @@ TRUE_LINK = {
         "era": 1.06,
         "fip": 1.05,
     },
+    ("CUBA", "CPBL"): {
+        "bb_pct": 0.96,
+        "k_pct": 1.04,
+        "iso": 0.90,
+        "babip": 0.98,
+        "hr_pct": 0.88,
+        "woba": 0.93,
+        "p_k_pct": 0.96,
+        "p_bb_pct": 1.03,
+        "hr_fb": 1.03,
+        "era": 1.07,
+        "fip": 1.06,
+    },
     ("CPBL", "KBO"): {
         "bb_pct": 0.97,
         "k_pct": 1.03,
@@ -246,7 +259,7 @@ def _apply_env_pitcher(talent: dict, league: str, age: float, rng: np.random.Gen
 
 
 def _chain_factors(from_league: str, to_league: str) -> dict[str, float]:
-    order = ["CPBL", "KBO", "NPB", "AAA", "MLB"]
+    order = ["CUBA", "CPBL", "KBO", "NPB", "AAA", "MLB"]
     if from_league not in order or to_league not in order:
         raise ValueError(f"unsupported path {from_league}->{to_league}")
     i = order.index(from_league)
@@ -367,10 +380,10 @@ def build_snapshots(out_dir: Path | None = None, seed: int = 42) -> Path:
                 )
 
     # Build transfer pairs with known ground-truth multipliers
-    links = [("AAA", "MLB"), ("NPB", "AAA"), ("NPB", "MLB"), ("KBO", "NPB"), ("KBO", "MLB"), ("CPBL", "KBO")]
+    links = [("AAA", "MLB"), ("NPB", "AAA"), ("NPB", "MLB"), ("KBO", "NPB"), ("KBO", "MLB"), ("CPBL", "KBO"), ("CUBA", "CPBL")]
     for from_lg, to_lg in links:
         factors = _chain_factors(from_lg, to_lg)
-        n_hit = {("AAA", "MLB"): 90, ("NPB", "MLB"): 35, ("NPB", "AAA"): 40, ("KBO", "MLB"): 25, ("KBO", "NPB"): 30, ("CPBL", "KBO"): 20}[
+        n_hit = {("AAA", "MLB"): 90, ("NPB", "MLB"): 35, ("NPB", "AAA"): 40, ("KBO", "MLB"): 25, ("KBO", "NPB"): 30, ("CPBL", "KBO"): 20, ("CUBA", "CPBL"): 12}[
             (from_lg, to_lg)
         ]
         n_pit = max(12, n_hit // 2)

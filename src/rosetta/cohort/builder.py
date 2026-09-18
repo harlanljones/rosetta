@@ -1,4 +1,10 @@
-"""Build transferred-player pairs from season tables + transfer index."""
+"""Build transferred-player pairs from season tables + transfer index.
+
+Supports cross-league ID matching via Chadwick register: when a transfer row
+and the season table use different ID prefixes (e.g. 'kbo-62404' in KBO vs
+'mlbam-660271' in MLB), pass a Chadwick register to `build_cohort` so that
+shared `key_uuid` values bridge the gap.
+"""
 
 from __future__ import annotations
 
@@ -12,29 +18,68 @@ HITTER_STATS = ["bb_pct", "k_pct", "iso", "babip", "hr_pct", "woba", "pa"]
 PITCHER_STATS = ["k_pct", "bb_pct", "hr_fb", "era", "fip", "ip"]
 
 
+def _with_uuid_index(
+    df: pd.DataFrame, crosswalk: dict[str, str]
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Augment df with key_uuid; return (player_id_index, uuid_index)."""
+    pid_idx = df.set_index(["player_id", "season", "league"], drop=False)
+    df2 = df.copy()
+    df2["key_uuid"] = df2["player_id"].map(crosswalk)
+    df2 = df2.dropna(subset=["key_uuid"]).drop_duplicates(
+        ["key_uuid", "season", "league", "player_id"]
+    )
+    uuid_idx = df2.set_index(["key_uuid", "season", "league"], drop=False)
+    return pid_idx, uuid_idx
+
+
 def pair_seasons(
     transfers: pd.DataFrame,
     batters: pd.DataFrame,
     pitchers: pd.DataFrame,
+    *,
+    id_crosswalk: dict[str, str] | None = None,
 ) -> pd.DataFrame:
-    """Join pre/post season lines onto each transfer row."""
+    """Join pre/post season lines onto each transfer row.
+
+    When `id_crosswalk` is provided and a direct (player_id, season, league)
+    lookup fails, the function retries via Chadwick `key_uuid` mapping.
+    """
     rows: list[dict] = []
-    bat = batters.set_index(["player_id", "season", "league"], drop=False)
-    pit = pitchers.set_index(["player_id", "season", "league"], drop=False)
+    bat_idx, bat_uuid = _with_uuid_index(batters, id_crosswalk or {})
+    pit_idx, pit_uuid = _with_uuid_index(pitchers, id_crosswalk or {})
 
     for rec in transfers.to_dict(orient="records"):
         role = rec["role"]
-        table = bat if role == "batter" else pit
-        pre_key = (rec["player_id"], int(rec["from_season"]), rec["from_league"])
-        post_key = (rec["player_id"], int(rec["to_season"]), rec["to_league"])
-        if pre_key not in table.index or post_key not in table.index:
+        pid_idx = bat_idx if role == "batter" else pit_idx
+        uuid_idx = bat_uuid if role == "batter" else pit_uuid
+        pk = (rec["player_id"], int(rec["from_season"]), rec["from_league"])
+        pk2 = (rec["player_id"], int(rec["to_season"]), rec["to_league"])
+
+        pre = pid_idx.loc[pk] if pk in pid_idx.index else None
+        post = pid_idx.loc[pk2] if pk2 in pid_idx.index else None
+
+        if (pre is None or post is None) and id_crosswalk:
+            tuid = id_crosswalk.get(str(rec["player_id"]))
+            if tuid:
+                flg, tlg = rec["from_league"], rec["to_league"]
+                fs, ts = int(rec["from_season"]), int(rec["to_season"])
+                for vacancy, lg, s in [(pre, flg, fs), (post, tlg, ts)]:
+                    if vacancy is not None:
+                        continue
+                    ukey = (tuid, s, lg)
+                    if ukey in uuid_idx.index:
+                        alt_row = uuid_idx.loc[ukey]
+                        alt_pid = str(alt_row["player_id"]) if not isinstance(alt_row, pd.DataFrame) else str(alt_row.iloc[0]["player_id"])
+                        alt_key = (alt_pid, s, lg)
+                        if alt_key in pid_idx.index:
+                            v = pid_idx.loc[alt_key]
+                            if isinstance(v, pd.DataFrame):
+                                v = v.iloc[0]
+                            if vacancy is None:
+                                vacancy = v
+
+        if pre is None or post is None:
             continue
-        pre = table.loc[pre_key]
-        post = table.loc[post_key]
-        if isinstance(pre, pd.DataFrame):
-            pre = pre.iloc[0]
-        if isinstance(post, pd.DataFrame):
-            post = post.iloc[0]
 
         stats = HITTER_STATS if role == "batter" else PITCHER_STATS
         row = {
@@ -61,15 +106,32 @@ def build_cohort(
     *,
     min_pa: float = 80.0,
     min_ip: float = 30.0,
+    chadwick_path: Path | None = None,
 ) -> pd.DataFrame:
-    """Full transferred-player cohort with sample thresholds."""
+    """Full transferred-player cohort with sample thresholds.
+
+    When `chadwick_path` points to a Chadwick register CSV, the builder
+    cross-references league-specific IDs (mlbam-, kbo-, npb- etc.) via
+    the Chadwick key_uuid so that transfers across different ID namespaces
+    are discovered.
+    """
     transfers = load_transfers(snapshot_dir)
     batters = load_all_seasons(role="batter", snapshot_dir=snapshot_dir)
     pitchers = load_all_seasons(role="pitcher", snapshot_dir=snapshot_dir)
-    paired = pair_seasons(transfers, batters, pitchers)
+
+    crosswalk: dict[str, str] | None = None
+    if chadwick_path and chadwick_path.exists():
+        from rosetta.ingest.chadwick import build_id_crosswalk, load_register
+
+        register = load_register(chadwick_path)
+        crosswalk = build_id_crosswalk(register)
+
+    paired = pair_seasons(transfers, batters, pitchers, id_crosswalk=crosswalk)
     if paired.empty:
         return paired
 
     batter_mask = (paired["role"] == "batter") & (paired["pre_pa"] >= min_pa) & (paired["post_pa"] >= min_pa)
-    pitcher_mask = (paired["role"] == "pitcher") & (paired["pre_ip"] >= min_ip) & (paired["post_ip"] >= min_ip)
+    pitcher_mask = pd.Series(False, index=paired.index)
+    if "pre_ip" in paired.columns and "post_ip" in paired.columns:
+        pitcher_mask = (paired["role"] == "pitcher") & (paired["pre_ip"] >= min_ip) & (paired["post_ip"] >= min_ip)
     return paired.loc[batter_mask | pitcher_mask].reset_index(drop=True)

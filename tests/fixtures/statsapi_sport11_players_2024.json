@@ -1,0 +1,276 @@
+{
+ "people": [
+  {
+   "id": 676265,
+   "fullName": "Cory Abbott",
+   "link": "/api/v1/people/676265",
+   "firstName": "Cory",
+   "lastName": "Abbott",
+   "primaryNumber": "38",
+   "birthDate": "1995-09-20",
+   "currentAge": 30,
+   "birthCity": "San Diego",
+   "birthStateProvince": "CA",
+   "birthCountry": "USA",
+   "height": "6' 2\"",
+   "weight": 217,
+   "active": true,
+   "currentTeam": {
+    "id": 494,
+    "name": "Charlotte Knights",
+    "link": "/api/v1/teams/494"
+   },
+   "primaryPosition": {
+    "code": "1",
+    "name": "Pitcher",
+    "type": "Pitcher",
+    "abbreviation": "P"
+   },
+   "useName": "Cory",
+   "useLastName": "Abbott",
+   "middleName": "James",
+   "boxscoreName": "Abbott, C",
+   "gender": "M",
+   "isPlayer": true,
+   "isVerified": true,
+   "draftYear": 2017,
+   "mlbDebutDate": "2021-06-05",
+   "batSide": {
+    "code": "R",
+    "description": "Right"
+   },
+   "pitchHand": {
+    "code": "R",
+    "description": "Right"
+   },
+   "nameFirstLast": "Cory Abbott",
+   "nameSlug": "cory-abbott-676265",
+   "firstLastName": "Cory Abbott",
+   "lastFirstName": "Abbott, Cory",
+   "lastInitName": "Abbott, C",
+   "initLastName": "C Abbott",
+   "fullFMLName": "Cory James Abbott",
+   "fullLFMName": "Abbott, Cory James",
+   "strikeZoneTop": 3.299,
+   "strikeZoneBottom": 1.665
+  },
+  {
+   "id": 690953,
+   "fullName": "Mick Abel",
+   "link": "/api/v1/people/690953",
+   "firstName": "McLean",
+   "lastName": "Abel",
+   "primaryNumber": "25",
+   "birthDate": "2001-08-18",
+   "currentAge": 25,
+   "birthCity": "Portland",
+   "birthStateProvince": "OR",
+   "birthCountry": "USA",
+   "height": "6' 5\"",
+   "weight": 190,
+   "active": true,
+   "currentTeam": {
+    "id": 1410,
+    "name": "Lehigh Valley IronPigs",
+    "link": "/api/v1/teams/1410"
+   },
+   "primaryPosition": {
+    "code": "1",
+    "name": "Pitcher",
+    "type": "Pitcher",
+    "abbreviation": "P"
+   },
+   "useName": "Mick",
+   "useLastName": "Abel",
+   "middleName": "Stine",
+   "boxscoreName": "Abel",
+   "gender": "M",
+   "isPlayer": true,
+   "isVerified": true,
+   "draftYear": 2020,
+   "pronunciation": "AY-bull",
+   "mlbDebutDate": "2025-05-18",
+   "batSide": {
+    "code": "R",
+    "description": "Right"
+   },
+   "pitchHand": {
+    "code": "R",
+    "description": "Right"
+   },
+   "nameFirstLast": "Mick Abel",
+   "nameSlug": "mick-abel-690953",
+   "firstLastName": "Mick Abel",
+   "lastFirstName": "Abel, Mick",
+   "lastInitName": "Abel, M",
+   "initLastName": "M Abel",
+   "fullFMLName": "McLean Stine Abel",
+   "fullLFMName": "Abel, McLean Stine",
+   "strikeZoneTop": 3.433,
+   "strikeZoneBottom": 1.733
+  },
+  {
+   "id": 547989,
+   "fullName": "Jos\u00e9 Abreu",
+   "link": "/api/v1/people/547989",
+   "firstName": "Jos\u00e9",
+   "lastName": "Abreu",
+   "primaryNumber": "79",
+   "birthDate": "1987-01-29",
+   "currentAge": 39,
+   "birthCity": "Cienfuegos",
+   "birthCountry": "Cuba",
+   "height": "6' 3\"",
+   "weight": 250,
+   "active": false,
+   "currentTeam": {
+    "id": 5434,
+    "name": "Sugar Land Space Cowboys",
+    "link": "/api/v1/teams/5434"
+   },
+   "primaryPosition": {
+    "code": "3",
+    "name": "First Base",
+    "type": "Infielder",
+    "abbreviation": "1B"
+   },
+   "useName": "Jos\u00e9",
+   "useLastName": "Abreu",
+   "middleName": "Dariel",
+   "boxscoreName": "Abreu, J",
+   "nickName": "Mal Tiempo",
+   "gender": "M",
+   "nameMatrilineal": "Correa",
+   "isPlayer": true,
+   "isVerified": true,
+   "pronunciation": "uh-BRAY-you",
+   "lastPlayedDate": "2024-06-12",
+   "mlbDebutDate": "2014-03-31",
+   "batSide": {
+    "code": "R",
+    "description": "Right"
+   },
+   "pitchHand": {
+    "code": "R",
+    "description": "Right"
+   },
+   "nameFirstLast": "Jos\u00e9 Abreu",
+   "nameSlug": "jose-abreu-547989",
+   "firstLastName": "Jos\u00e9 Abreu",
+   "lastFirstName": "Abreu, Jos\u00e9",
+   "lastInitName": "Abreu, J",
+   "initLastName": "J Abreu",
+   "fullFMLName": "Jos\u00e9 Dariel Abreu",
+   "fullLFMName": "Abreu, Jos\u00e9 Dariel",
+   "strikeZoneTop": 3.42,
+   "strikeZoneBottom": 1.55
+  },
+  {
+   "id": 677800,
+   "fullName": "Wilyer Abreu",
+   "link": "/api/v1/people/677800",
+   "firstName": "Wilyer",
+   "lastName": "Abreu",
+   "primaryNumber": "52",
+   "birthDate": "1999-06-24",
+   "currentAge": 27,
+   "birthCity": "Maracaibo",
+   "birthCountry": "Venezuela",
+   "height": "5' 10\"",
+   "weight": 215,
+   "active": true,
+   "currentTeam": {
+    "id": 533,
+    "name": "Worcester Red Sox",
+    "link": "/api/v1/teams/533"
+   },
+   "primaryPosition": {
+    "code": "9",
+    "name": "Outfielder",
+    "type": "Outfielder",
+    "abbreviation": "RF"
+   },
+   "useName": "Wilyer",
+   "useLastName": "Abreu",
+   "middleName": "David",
+   "boxscoreName": "Abreu, W",
+   "gender": "M",
+   "nameMatrilineal": "Villalobos",
+   "isPlayer": true,
+   "isVerified": true,
+   "pronunciation": "WHEEL-yurr",
+   "mlbDebutDate": "2023-08-22",
+   "batSide": {
+    "code": "L",
+    "description": "Left"
+   },
+   "pitchHand": {
+    "code": "L",
+    "description": "Left"
+   },
+   "nameFirstLast": "Wilyer Abreu",
+   "nameSlug": "wilyer-abreu-677800",
+   "firstLastName": "Wilyer Abreu",
+   "lastFirstName": "Abreu, Wilyer",
+   "lastInitName": "Abreu, W",
+   "initLastName": "W Abreu",
+   "fullFMLName": "Wilyer David Abreu",
+   "fullLFMName": "Abreu, Wilyer David",
+   "strikeZoneTop": 3.117,
+   "strikeZoneBottom": 1.573
+  },
+  {
+   "id": 670897,
+   "fullName": "Daison Acosta",
+   "link": "/api/v1/people/670897",
+   "firstName": "Daison",
+   "lastName": "Acosta",
+   "primaryNumber": "59",
+   "birthDate": "1998-08-24",
+   "currentAge": 28,
+   "birthCity": "Paraiso",
+   "birthCountry": "Dominican Republic",
+   "height": "6' 2\"",
+   "weight": 160,
+   "active": true,
+   "currentTeam": {
+    "id": 534,
+    "name": "Rochester Red Wings",
+    "link": "/api/v1/teams/534"
+   },
+   "primaryPosition": {
+    "code": "1",
+    "name": "Pitcher",
+    "type": "Pitcher",
+    "abbreviation": "P"
+   },
+   "useName": "Daison",
+   "useLastName": "Acosta",
+   "middleName": "Maquier",
+   "boxscoreName": "Acosta",
+   "gender": "M",
+   "nameMatrilineal": "Feliz",
+   "isPlayer": true,
+   "isVerified": false,
+   "pronunciation": "day-sun uh-cost-uh",
+   "batSide": {
+    "code": "R",
+    "description": "Right"
+   },
+   "pitchHand": {
+    "code": "R",
+    "description": "Right"
+   },
+   "nameFirstLast": "Daison Acosta",
+   "nameSlug": "daison-acosta-670897",
+   "firstLastName": "Daison Acosta",
+   "lastFirstName": "Acosta, Daison",
+   "lastInitName": "Acosta, D",
+   "initLastName": "D Acosta",
+   "fullFMLName": "Daison Maquier Acosta",
+   "fullLFMName": "Acosta, Daison Maquier",
+   "strikeZoneTop": 3.299,
+   "strikeZoneBottom": 1.665
+  }
+ ]
+}

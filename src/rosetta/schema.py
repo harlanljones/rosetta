@@ -8,7 +8,7 @@ from typing import Literal
 import pandas as pd
 from pydantic import BaseModel, Field
 
-LEAGUE_CHAIN: tuple[str, ...] = ("CPBL", "KBO", "NPB", "AAA", "MLB")
+LEAGUE_CHAIN: tuple[str, ...] = ("CUBA", "CPBL", "KBO", "NPB", "AAA", "MLB")
 
 HITTER_RATE_COLS = ("bb_pct", "k_pct", "iso", "babip", "hr_pct", "woba")
 PITCHER_RATE_COLS = ("k_pct", "bb_pct", "hr_fb", "era", "fip")

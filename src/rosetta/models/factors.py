@@ -2,7 +2,7 @@
 
 Method (portfolio v1): age-adjusted rate ratios + sample-size shrinkage to 1.0
 + bootstrap percentile intervals. Factors chain multiplicatively along
-CPBL → KBO → NPB → AAA → MLB.
+CUBA → CPBL → KBO → NPB → AAA → MLB.
 """
 
 from __future__ import annotations
@@ -222,6 +222,11 @@ class LeagueFactorModel:
             acc *= node["factor"]
         return acc
 
+    #: Log-space SD penalty per path link with no fitted factor. An unestimated
+    #: link contributes identity (1.0) to the point estimate but honest width to
+    #: the band — thin-data translations must never report zero-width intervals.
+    MISSING_LINK_SD = 0.20
+
     def get_interval(
         self, role: str, from_league: str, to_league: str, stat: str
     ) -> tuple[float, float, float, float]:
@@ -235,6 +240,7 @@ class LeagueFactorModel:
             key = self.link_key(a, b)
             node = self.links.get(role, {}).get(key, {}).get(stat)
             if not node:
+                resid_var += self.MISSING_LINK_SD**2
                 continue
             f = max(node["factor"], 1e-6)
             lo = max(node.get("low", f), 1e-6)

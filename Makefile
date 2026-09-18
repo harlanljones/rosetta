@@ -1,4 +1,4 @@
-.PHONY: install install-dev test lint backtest leaderboard factors snapshots clean
+.PHONY: install install-dev test lint backtest leaderboard factors snapshots live-data clean
 
 PYTHON ?= python3
 PIP ?= $(PYTHON) -m pip
@@ -17,6 +17,12 @@ lint:
 
 snapshots:
 	$(PYTHON) -m rosetta.ingest.generate_snapshots
+
+live-data:
+	rosetta fetch-statsapi --seasons 2024,2025 --sport 11 --league-label AAA
+	rosetta fetch-statsapi --seasons 2024,2025 --sport 1 --league-label MLB
+	rosetta fetch-kbo --seasons 2024,2025 --no-with-ages
+	$(MAKE) leaderboard
 
 factors:
 	@mkdir -p data/outputs

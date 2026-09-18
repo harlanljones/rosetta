@@ -4,7 +4,7 @@
 
 Rosetta is a public Major League Equivalency (MLE) engine. It answers a single front-office question: *if this NPB / KBO / CPBL / AAA line happened in MLB, what would the rates look like — and how sure are we?*
 
-The short version of the method: find players who actually moved between leagues, age-adjust their component rates, estimate shrunken difficulty factors from those movers, chain the factors along CPBL → KBO → NPB → AAA → MLB, and report bootstrap uncertainty bands instead of fake precision.
+The short version of the method: find players who actually moved between leagues, age-adjust their component rates, estimate shrunken difficulty factors from those movers, chain the factors along CUBA → CPBL → KBO → NPB → AAA → MLB, and report bootstrap uncertainty bands instead of fake precision.
 
 ---
 

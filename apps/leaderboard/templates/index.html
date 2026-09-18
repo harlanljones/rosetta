@@ -63,6 +63,7 @@
     <h1>Rosetta MLE Leaderboard</h1>
     <p class="sub">Foreign-league performance translated to MLB-equivalent rates
       {% if season %}· season {{ season }}{% endif %}
+      {% if data_mode == "real" %}· live-source rows only{% endif %}
     </p>
   </header>
   <main>
@@ -115,6 +116,7 @@
     </div>
   </main>
   <footer>
+    {% if data_mode == "real" %}Only rows ingested from live data sources are shown. {% endif %}
     Uncertainty bands come from bootstrap of the transferred-player cohort.
     Thin leagues (CPBL/Cuba) intentionally show wide intervals.
     <a href="/api/leaderboard">JSON API</a>
