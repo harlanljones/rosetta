@@ -12,3 +12,5 @@ data/raw/
 .coverage
 htmlcov/
 .DS_Store
+.hermes/
+data/snapshots/chadwick_people.csv
