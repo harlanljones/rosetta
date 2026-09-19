@@ -104,6 +104,13 @@ def generate_transfers(
         result = result.drop_duplicates(
             ["player_id", "role", "from_league", "to_league", "from_season"]
         ).sort_values(["from_league", "to_league", "from_season"]).reset_index(drop=True)
+        # Hold out pairs landing in the most recent to-season, but only when
+        # earlier to-seasons exist to train on (otherwise nothing would train).
+        to_seasons = sorted(result["to_season"].unique())
+        if len(to_seasons) > 1:
+            result["holdout"] = result["to_season"] >= to_seasons[-1]
+        else:
+            result["holdout"] = False
     return result
 
 

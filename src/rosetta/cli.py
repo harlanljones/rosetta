@@ -17,7 +17,9 @@ from rosetta.models.factors import fit_factor_model
 from rosetta.paths import OUTPUT_DIR, SNAPSHOT_DIR, ensure_data_dirs
 from rosetta.translate.api import translate, translate_frame
 
-app = typer.Typer(help="Rosetta MLE — translate foreign/minor league stats to MLB scale.", no_args_is_help=True)
+app = typer.Typer(
+    help="Rosetta MLE — translate foreign/minor league stats to MLB scale.", no_args_is_help=True
+)
 
 
 @app.command("generate-snapshots")
@@ -86,7 +88,9 @@ def backtest_cmd(
     ensure_data_dirs()
     if not factors.exists():
         fit_factors(snapshots=snapshots, out=factors, boot=boot, chadwick=chadwick)
-    metrics = run_backtest(snapshots, factors_path=factors, n_boot=boot, out_path=out, chadwick_path=chadwick)
+    metrics = run_backtest(
+        snapshots, factors_path=factors, n_boot=boot, out_path=out, chadwick_path=chadwick
+    )
     table = Table(title="Backtest by stat")
     table.add_column("stat")
     table.add_column("n", justify="right")
@@ -183,7 +187,9 @@ def fetch_chadwick(
 def fetch_statsapi(
     seasons: str = typer.Option("2024", help="Comma-separated seasons, e.g. 2022,2023,2024"),
     sport: int = typer.Option(11, help="Stats API sportId (11=AAA, 12=AA, 17=winter)"),
-    league_label: str | None = typer.Option(None, help="Override league label (default from sportId)"),
+    league_label: str | None = typer.Option(
+        None, help="Override league label (default from sportId)"
+    ),
     league_ids: str | None = typer.Option(None, help="Comma-separated leagueIds filter"),
     snapshots: Path = typer.Option(SNAPSHOT_DIR),
     with_ages: bool = typer.Option(True, help="Backfill ages from the sport player pool"),
@@ -193,7 +199,11 @@ def fetch_statsapi(
 
     years = [int(s) for s in seasons.split(",") if s.strip()]
     root = write_statsapi_snapshots(
-        years, sport, league_label=league_label, league_ids=league_ids, out_dir=snapshots,
+        years,
+        sport,
+        league_label=league_label,
+        league_ids=league_ids,
+        out_dir=snapshots,
         with_ages=with_ages,
     )
     rprint(f"[green]Stats API snapshots →[/green] {root}")
@@ -229,8 +239,14 @@ def fetch_savant(
     from rosetta.ingest.savant import write_savant_snapshots
 
     root = write_savant_snapshots(
-        start_date, end_date, season, league,
-        minors=minors, raw_dir=raw_dir, out_dir=snapshots, delay=delay,
+        start_date,
+        end_date,
+        season,
+        league,
+        minors=minors,
+        raw_dir=raw_dir,
+        out_dir=snapshots,
+        delay=delay,
     )
     rprint(f"[green]Savant snapshots →[/green] {root}")
 
@@ -263,7 +279,9 @@ def derive_park_factors_cmd(
 
 @app.command("generate-transfers")
 def generate_transfers_cmd(
-    register: Path = typer.Option(SNAPSHOT_DIR / "chadwick_people.csv", help="Chadwick register CSV"),
+    register: Path = typer.Option(
+        SNAPSHOT_DIR / "chadwick_people.csv", help="Chadwick register CSV"
+    ),
     snapshots: Path = typer.Option(SNAPSHOT_DIR),
     out: Path = typer.Option(SNAPSHOT_DIR / "transfers.csv"),
     max_gap: int = typer.Option(1, help="Max season gap for a transfer pair"),
@@ -272,7 +290,10 @@ def generate_transfers_cmd(
     from rosetta.ingest.transfers import write_transfer_snapshot
 
     path = write_transfer_snapshot(
-        register_path=register, snapshot_dir=snapshots, max_season_gap=max_gap, out_path=out,
+        register_path=register,
+        snapshot_dir=snapshots,
+        max_season_gap=max_gap,
+        out_path=out,
     )
     rprint(f"[green]Transfer pairs →[/green] {path}")
 

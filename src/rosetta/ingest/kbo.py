@@ -35,6 +35,21 @@ import pandas as pd
 from rosetta.paths import SNAPSHOT_DIR, ensure_data_dirs
 from rosetta.schema import HITTER_COLUMNS, PITCHER_COLUMNS
 
+HANGUL_RE = re.compile(r"[\uac00-\ud7af]")
+
+
+def romanize_name(name: str) -> str:
+    """Romanize Hangul names/teams to RR (pass through anything else)."""
+    if not HANGUL_RE.search(name):
+        return name
+    try:
+        from korean_romanizer.romanizer import Romanizer
+
+        return str(Romanizer(name).romanize())
+    except ImportError:
+        return name
+
+
 BASE = "https://www.koreabaseball.com"
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0"}
 
@@ -244,14 +259,14 @@ def normalize_hitting(
         ) / pa
         kbo_id = str(r.get("_kbo_id", "") or "")
         by = birth_years.get(kbo_id)
-        name = str(r.get("선수명", ""))
+        name = romanize_name(str(r.get("선수명", "")))
         rows.append(
             {
                 "player_id": f"kbo-{kbo_id}" if kbo_id else f"kbo-name-{name}",
                 "player_name": name,
                 "season": season,
                 "league": "KBO",
-                "team": str(r.get("팀명", "")),
+                "team": romanize_name(str(r.get("팀명", ""))),
                 "role": "batter",
                 "age": float(season - by) if by else 27.0,
                 "pa": pa,
@@ -312,14 +327,14 @@ def normalize_pitching(
         fip = (13 * hr + 3 * (bb + hbp) - 2 * so) / ip + FIP_CONSTANT
         kbo_id = str(r.get("_kbo_id", "") or "")
         by = birth_years.get(kbo_id)
-        name = str(r.get("선수명", ""))
+        name = romanize_name(str(r.get("선수명", "")))
         rows.append(
             {
                 "player_id": f"kbo-{kbo_id}" if kbo_id else f"kbo-name-{name}",
                 "player_name": name,
                 "season": season,
                 "league": "KBO",
-                "team": str(r.get("팀명", "")),
+                "team": romanize_name(str(r.get("팀명", ""))),
                 "role": "pitcher",
                 "age": float(season - by) if by else 27.0,
                 "ip": ip,

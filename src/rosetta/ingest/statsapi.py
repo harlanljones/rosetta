@@ -75,6 +75,7 @@ def fetch_splits(
             "group": group,
             "season": season,
             "sportId": sport_id,
+            "playerPool": "ALL",
             "limit": limit,
             "offset": offset,
         }
