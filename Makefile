@@ -22,6 +22,10 @@ live-data:
 	rosetta fetch-statsapi --seasons 2024,2025 --sport 11 --league-label AAA
 	rosetta fetch-statsapi --seasons 2024,2025 --sport 1 --league-label MLB
 	rosetta fetch-kbo --seasons 2024,2025 --no-with-ages
+	rosetta fetch-npb --seasons 2024,2025 --no-with-ages
+	rosetta generate-transfers
+	rm -f data/outputs/factors.json
+	$(MAKE) factors
 	$(MAKE) leaderboard
 
 factors:

@@ -70,9 +70,7 @@ def _clean(cell: str) -> str:
 
 def parse_table(html: str) -> tuple[list[str], list[dict]]:
     """Parse a KBO record table → (headers, rows with values + player_id)."""
-    table = re.search(
-        r'<table class="tData01 tt".*?</table>', html, re.S
-    )
+    table = re.search(r'<table class="tData01 tt".*?</table>', html, re.S)
     if not table:
         return [], []
     body = table.group(0)
@@ -129,7 +127,9 @@ class KBOSession:
         season_field = ""
         for n in re.findall(r'<select name="([^"]+)"', html):
             m = re.search(f'<select name="{re.escape(n)}".*?</select>', html, re.S)
-            sel = re.findall(r'<option selected="selected" value="([^"]*)"', m.group(0)) if m else []
+            sel = (
+                re.findall(r'<option selected="selected" value="([^"]*)"', m.group(0)) if m else []
+            )
             form[n] = sel[0] if sel else ""
             if "ddlSeason" in n:
                 season_field = n
@@ -401,7 +401,14 @@ def write_kbo_snapshots(
         path = root / fname
         if append and path.exists() and not frame.empty:
             old = pd.read_csv(path)
-            old = old[old["is_synthetic"].astype(str) == "True"]
+            old = pd.read_csv(path)
+            # Merge semantics: synthetic fixture rows are always preserved;
+            # real rows are replaced only for seasons being written now.
+            written_keys = {(row["league"], row["season"]) for row in frame.to_dict("records")}
+            keys = written_keys
+            is_real = old["is_synthetic"].astype(str) != "True"
+            rewritten = old.apply(lambda r, wk=keys: (r["league"], r["season"]) in wk, axis=1)
+            old = old[~(is_real & rewritten)]
             frame = pd.concat([old, frame], ignore_index=True).drop_duplicates(
                 ["player_id", "season", "league"], keep="last"
             )

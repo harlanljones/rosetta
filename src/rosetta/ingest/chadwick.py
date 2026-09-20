@@ -86,9 +86,14 @@ def build_id_crosswalk(register: pd.DataFrame) -> dict[str, str]:
         uid = str(row.get("key_uuid", ""))
         if not uid:
             continue
-        for col, prefix in (("key_mlbam", "mlbam"), ("key_npb", "npb"), ("key_kbo", "kbo"),
-                            ("key_bbref", "bbref"), ("key_fangraphs", "fg"),
-                            ("key_retro", "retro")):
+        for col, prefix in (
+            ("key_mlbam", "mlbam"),
+            ("key_npb", "npb"),
+            ("key_kbo", "kbo"),
+            ("key_bbref", "bbref"),
+            ("key_fangraphs", "fg"),
+            ("key_retro", "retro"),
+        ):
             val = row.get(col)
             if pd.isna(val):
                 continue
@@ -101,6 +106,21 @@ def build_id_crosswalk(register: pd.DataFrame) -> dict[str, str]:
             except (ValueError, TypeError):
                 pass
             cross[f"{prefix}-{raw}"] = uid
+        # Name-based fallback for the npb-name-* ids left by the fetcher when
+        # a player is no longer on the BIS active index ("Last, First" format
+        # on npb.jp matches name_last + name_given). Exact full-name match,
+        # only for players that carry a key_npb, to keep collision risk low.
+        last = str(row.get("name_last", "") or "").strip()
+        given = str(row.get("name_given", "") or "").strip()
+        if last and given and pd.notna(row.get("key_npb")):
+            name_key = f"npb-name-{last}, {given}"
+            existing = cross.get(name_key)
+            if existing is None:
+                cross[name_key] = uid
+            elif existing != uid:
+                # Ambiguous full name — drop it rather than mis-link.
+                cross.pop(name_key, None)
+                cross[name_key] = ""  # tombstone: never link ambiguous names
     return cross
 
 

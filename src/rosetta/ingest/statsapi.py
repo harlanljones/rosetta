@@ -116,9 +116,7 @@ def _num(stat: dict, *names: str) -> float:
     return 0.0
 
 
-def normalize_hitting(
-    splits: list[dict], season: int, league_label: str
-) -> pd.DataFrame:
+def normalize_hitting(splits: list[dict], season: int, league_label: str) -> pd.DataFrame:
     """Map Stats API hitting splits → Rosetta hitter schema."""
     rows: list[dict] = []
     for sp in splits:
@@ -194,9 +192,7 @@ def normalize_hitting(
     return out
 
 
-def normalize_pitching(
-    splits: list[dict], season: int, league_label: str
-) -> pd.DataFrame:
+def normalize_pitching(splits: list[dict], season: int, league_label: str) -> pd.DataFrame:
     """Map Stats API pitching splits → Rosetta pitcher schema."""
     rows: list[dict] = []
     for sp in splits:
@@ -337,9 +333,7 @@ def write_statsapi_snapshots(
     bats: list[pd.DataFrame] = []
     pits: list[pd.DataFrame] = []
     for season in seasons:
-        b, p = fetch_league_season(
-            season, sport_id, league_label=label, league_ids=league_ids
-        )
+        b, p = fetch_league_season(season, sport_id, league_label=label, league_ids=league_ids)
         if with_ages and (not b.empty or not p.empty):
             try:
                 pool = fetch_sport_players(season, sport_id)
@@ -355,7 +349,13 @@ def write_statsapi_snapshots(
         path = root / name
         if append and path.exists() and not df.empty:
             old = pd.read_csv(path)
-            old = old[old["is_synthetic"].astype(str) == "True"]
+            # Merge semantics: synthetic fixture rows are always preserved;
+            # real rows are replaced only for seasons being written now.
+            written_keys = {(row["league"], row["season"]) for row in df.to_dict("records")}
+            old = old[
+                (old["is_synthetic"].astype(str) == "True")
+                | ~old.apply(lambda r, wk=written_keys: (r["league"], r["season"]) in wk, axis=1)
+            ]
             df = pd.concat([old, df], ignore_index=True).drop_duplicates(
                 ["player_id", "season", "league"], keep="last"
             )

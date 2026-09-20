@@ -11,9 +11,11 @@
       --text: #e8eefc;
       --muted: #9aa8c7;
       --accent: #6ea8fe;
+      --accent-soft: #b9d4ff;
       --good: #3ddc97;
       --warn: #ffd166;
       --border: #243049;
+      --terminal: #080d17;
     }
     * { box-sizing: border-box; }
     body {
@@ -24,12 +26,29 @@
       line-height: 1.45;
     }
     header {
-      padding: 2rem 1.5rem 1rem;
+      padding: 2rem 1.5rem 1.25rem;
       max-width: 1100px;
       margin: 0 auto;
     }
-    h1 { margin: 0 0 0.25rem; font-size: 1.8rem; letter-spacing: -0.02em; }
+    .masthead {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 2rem;
+    }
+    .kicker, .eyebrow {
+      margin: 0 0 0.6rem;
+      color: var(--accent-soft);
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    h1 { margin: 0 0 0.25rem; font-size: clamp(1.8rem, 4vw, 2.5rem); letter-spacing: -0.04em; }
     .sub { color: var(--muted); }
+    .site-nav { display: flex; gap: 1rem; padding-bottom: 0.25rem; white-space: nowrap; }
+    .site-nav a, .deployment a { color: var(--accent-soft); text-decoration: none; }
+    .site-nav a:hover, .site-nav a:focus-visible, .deployment a:hover, .deployment a:focus-visible { color: var(--text); text-decoration: underline; }
     main { max-width: 1100px; margin: 0 auto; padding: 0 1.5rem 3rem; }
     .grid { display: grid; gap: 1.25rem; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
     .card {
@@ -54,17 +73,64 @@
     .league { color: var(--accent); font-weight: 600; }
     .band { color: var(--muted); font-size: 0.8rem; }
     .error { background: #3a1d1d; border: 1px solid #7a3030; padding: 1rem; border-radius: 10px; }
+    .deployment {
+      display: grid;
+      grid-template-columns: minmax(240px, 0.8fr) minmax(0, 1.2fr);
+      gap: 2rem;
+      margin-top: 1.25rem;
+      padding: 1.5rem;
+      background: linear-gradient(135deg, rgba(110,168,254,0.1), rgba(61,220,151,0.04));
+      border: 1px solid var(--border);
+      border-top: 3px solid var(--accent);
+      border-radius: 14px;
+    }
+    .deployment h2 { margin: 0 0 0.65rem; font-size: 1.35rem; letter-spacing: -0.025em; }
+    .deployment p { margin: 0; color: var(--muted); }
+    .deployment-links { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: 1.25rem; font-size: 0.9rem; }
+    .runbook { display: grid; gap: 0.75rem; margin: 0; padding: 0; list-style: none; }
+    .runbook li { display: grid; grid-template-columns: 2rem 1fr; gap: 0.75rem; align-items: start; }
+    .step-no { color: var(--good); font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.8rem; padding-top: 0.12rem; }
+    .runbook strong { display: block; margin-bottom: 0.28rem; font-size: 0.9rem; }
+    .runbook code { display: block; width: 100%; overflow-x: auto; color: #d6e5ff; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.8rem; }
+    .terminal {
+      margin-top: 1.25rem;
+      padding: 1rem;
+      background: var(--terminal);
+      border: 1px solid #1e2b42;
+      border-radius: 10px;
+    }
+    .terminal-label { margin-bottom: 0.55rem; color: var(--muted); font-size: 0.72rem; }
+    .terminal pre { margin: 0; overflow-x: auto; color: #d8e7ff; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.78rem; line-height: 1.7; }
+    .prompt { color: var(--good); user-select: none; }
     footer { color: var(--muted); max-width: 1100px; margin: 0 auto; padding: 0 1.5rem 2rem; font-size: 0.85rem; }
     a { color: var(--accent); }
+    :focus-visible { outline: 2px solid var(--warn); outline-offset: 3px; }
+    @media (max-width: 700px) {
+      .masthead { display: block; }
+      .site-nav { margin-top: 1rem; }
+      .deployment { grid-template-columns: 1fr; gap: 1.25rem; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+    }
   </style>
 </head>
 <body>
   <header>
-    <h1>Rosetta MLE Leaderboard</h1>
-    <p class="sub">Foreign-league performance translated to MLB-equivalent rates
-      {% if season %}· season {{ season }}{% endif %}
-      {% if data_mode == "real" %}· live-source rows only{% endif %}
-    </p>
+    <div class="masthead">
+      <div>
+        <p class="kicker">Rosetta / translation board</p>
+        <h1>Rosetta MLE Leaderboard</h1>
+        <p class="sub">Foreign-league performance translated to MLB-equivalent rates
+          {% if season %}· season {{ season }}{% endif %}
+          {% if data_mode == "real" %}· live-source rows only{% endif %}
+        </p>
+      </div>
+      <nav class="site-nav" aria-label="Site navigation">
+        <a href="#deployment">Run locally</a>
+        <a href="/health">Health</a>
+      </nav>
+    </div>
   </header>
   <main>
     {% if error %}
@@ -114,6 +180,40 @@
         </table>
       </section>
     </div>
+    <section class="deployment" id="deployment" aria-labelledby="deployment-title">
+      <div>
+        <p class="eyebrow">Proof-of-deployment example</p>
+        <h2 id="deployment-title">Run the board from a clean checkout.</h2>
+        <p>The repository ships with the data build and the FastAPI site. Use the runbook to reproduce this view locally, then verify the service with its health endpoint.</p>
+        <div class="deployment-links">
+          <a href="/health">Check health</a>
+          <a href="/docs">Open API docs</a>
+        </div>
+      </div>
+      <div>
+        <ol class="runbook" aria-label="Local deployment steps">
+          <li>
+            <span class="step-no">01</span>
+            <div><strong>Install the web extras</strong><code>pip install -e "[dev,web]"</code></div>
+          </li>
+          <li>
+            <span class="step-no">02</span>
+            <div><strong>Build the leaderboard output</strong><code>make leaderboard</code></div>
+          </li>
+          <li>
+            <span class="step-no">03</span>
+            <div><strong>Start the FastAPI site</strong><code>make serve-leaderboard</code></div>
+          </li>
+        </ol>
+        <div class="terminal" aria-label="Deployment command example">
+          <div class="terminal-label">local terminal</div>
+          <pre><code><span class="prompt">$</span> python -m venv .venv
+<span class="prompt">$</span> source .venv/bin/activate
+<span class="prompt">$</span> pip install -e "[dev,web]"
+<span class="prompt">$</span> make serve-leaderboard</code></pre>
+        </div>
+      </div>
+    </section>
   </main>
   <footer>
     {% if data_mode == "real" %}Only rows ingested from live data sources are shown. {% endif %}

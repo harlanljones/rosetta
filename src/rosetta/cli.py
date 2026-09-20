@@ -224,6 +224,21 @@ def fetch_kbo(
     rprint(f"[green]KBO snapshots →[/green] {root}")
 
 
+@app.command("fetch-npb")
+def fetch_npb(
+    seasons: str = typer.Option("2025", help="Comma-separated seasons, e.g. 2024,2025"),
+    snapshots: Path = typer.Option(SNAPSHOT_DIR),
+    with_ages: bool = typer.Option(True, help="Fetch player cards for birth years"),
+    delay: float = typer.Option(1.0, help="Seconds between requests"),
+) -> None:
+    """Fetch NPB season lines via npb.jp BIS into snapshots."""
+    from rosetta.ingest.npb import write_npb_snapshots
+
+    years = [int(s) for s in seasons.split(",") if s.strip()]
+    root = write_npb_snapshots(years, out_dir=snapshots, with_ages=with_ages, delay=delay)
+    rprint(f"[green]NPB snapshots →[/green] {root}")
+
+
 @app.command("fetch-savant")
 def fetch_savant(
     start_date: str = typer.Option(..., help="Start date YYYY-MM-DD"),

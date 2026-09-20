@@ -50,6 +50,26 @@ GitHub API) unless marked otherwise. No guessed URLs.
 
 1. **MLB Stats API (#1) — AAA + winter +indy in one client.** Single biggest schema win: it fills the entire AAA bridge (the most trusted chain link, per spec §3), plus LIDOM/LVBP/LBPRC/LMP, the Mexican League, and the Atlantic League with one JSON client, no auth, and working season endpoints (verified). Also the only live-update-feasible source (nightly `fetch-*` → snapshot diff). **Wired 2026-09-18** (`src/rosetta/ingest/statsapi.py`, `rosetta fetch-statsapi`; stdlib-only, no extra deps). Coverage caveat found in wiring: the season endpoint returns a limited (effectively qualified) pool — AAA-2024 yields 136 hitting / 22 pitching splits — so it is a high-signal bridge sample + refresh feed, not a census. Committed snapshots stay synthetic until a real-data backtest comparison is explicitly run.
 2. **BR Register CSV exports (#2) — NPB/KBO/CPBL/Cuba depth.** Uniform full-season tables for every foreign league where the Stats API returns nothing (NPB/KBO sport entries are empty — verified). `key_bbref` IDs plug straight into the Chadwick cohort join. Covers winter/indy/college as a bonus. **Status 2026-09-18: BLOCKED from this machine** — `baseball-reference.com` returns Cloudflare 1015 (rate-limit/ban) on every path, and `mykbostats.com` serves a Cloudflare challenge; the CPBL English mirror (`en.cpbl.com.tw`) 404s. Retry from an unblocked IP with 5–10s delays + CSV-export links before building the BR parser. **Instead wired: KBO official (koreabaseball.com)** — `src/rosetta/ingest/kbo.py` + `rosetta fetch-kbo`, stdlib-only, cookie-session viewstate postbacks for seasons back to 1982, Basic1+Basic2 merge, birth years from detail pages, `kbo-{playerId}` stable IDs. Verified live on 2023 (Son Ah-seop .339/30 rows, Peddie 2.00 ERA). Caveat: leaderboards are top-qualified only (30/17 rows), no pitcher GS, no home/road splits.
+
+**Also wired: NPB official (npb.jp BIS English)** — `src/rosetta/ingest/npb.py` + `rosetta fetch-npb` (2026-09-19). Per-season Central+Pacific leaderboards (`/bis/eng/{season}/stats/{bat,pit}_{c,p}.html`), 8-digit BIS ids from the 26 `players/active/index_{a..z}.html` pages — **same ID space as Chadwick `key_npb`, so `npb-{id}` joins the crosswalk directly** — birth years from player cards. Verified live on 2024+2025 (87 batter / 48 pitcher rows; first 12 real NPB↔AAA/MLB transfer pairs; pitchers translate via the NPB→AAA→MLB chain, n=114 movers). Caveats: qualified top rows only; ids resolve only for players on the *active* index (departed players fall back to `npb-name-{name}`); no GS, no home/road splits.
+
+**Cohort crosswalk findings (2026-09-19):**
+- The Chadwick register has **no `key_kbo` column** — KBO ids can never join the
+  crosswalk, and `kbo-name-*` fallbacks don't match (Hangul romanization differs
+  from Chadwick spellings). KBO→MLB pairs therefore remain blocked until a KBO
+  ID crosswalk source exists (BR/mykbostats are Cloudflare-banned from this
+  machine). `build_id_crosswalk` gained a name-based fallback for `npb-name-*`
+  ids instead: exact "Last, First" match against `name_last, name_given`, only
+  for register rows carrying `key_npb`, with ambiguous full names tombstoned.
+- `build_cohort` now defaults the Chadwick register to
+  `data/snapshots/chadwick_people.csv` (was `None` — the cross-namespace join
+  was silently disabled in every CLI run; only leagues sharing the `mlbam-` id
+  space could pair). Also fixed: the uuid-retry in `pair_seasons` computed the
+  missing season line but assigned it to a loop variable, never writing it back
+  to `pre`/`post`.
+- Snapshot writers (`statsapi`/`kbo`/`npb`) previously dropped **all** existing
+  real rows on every fetch. They now merge: synthetic rows are always
+  preserved, real rows are replaced only for seasons being written.
 3. **BR home/road splits via `get_splits` (#3) — the park-factor columns.** Only source found that directly fills `home_woba/road_woba/home_era/road_era` per player. Crawl order: current leaderboard names → all movers in `transfers.csv` → team anchors. This unblocks spec §3 park factors without waiting for published NPB/KBO factors (which don't exist freely).
 4. **Savant minor-league Statcast (#4) — Phase-2 pitch data + translation validation.** All-AAA-since-2023 coverage is exactly the bridge league; use it to validate that K%/BB% translate cleanly and to prototype pitch-level translation (spec §3 Phase 2) with real data instead of synthetic `home/road` placeholders (cf. `mlb.py`, which currently fabricates 50/50 splits).
 5. **Lahman (#5) — CI-safe historical baseline.** Versioned, redistributable, zero network flakiness: pin the bundle, Loudly document the version, and use it for backtest history + ID linkage. (Retrosheet #6 is the runner-up: richer, but ~725MB full CSV — vendor slim aggregates, or defer until park-effect work needs play-by-play.)

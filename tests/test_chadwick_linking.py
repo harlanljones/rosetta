@@ -41,3 +41,32 @@ def test_cross_reference_seasons() -> None:
     assert out.loc[2, "key_uuid"] == "u1"
     assert pd.isna(out.loc[1, "key_uuid"])
     assert pd.isna(out.loc[3, "key_uuid"])
+
+
+def test_crosswalk_name_fallback() -> None:
+    register = pd.DataFrame(
+        {
+            "key_uuid": ["u1", "u2", "u3"],
+            "key_mlbam": [None, 545341.0, None],
+            "key_npb": [81183889.0, None, 93195138.0],
+            "name_last": ["Sugano", "Maeda", "Watanabe"],
+            "name_given": ["Tomoyuki", "Kenta", "Riku"],
+        }
+    )
+    cw = build_id_crosswalk(register)
+    assert cw["npb-name-Sugano, Tomoyuki"] == "u1"
+    # Name keys only exist for players carrying a key_npb
+    assert "npb-name-Maeda, Kenta" not in cw
+
+
+def test_crosswalk_name_fallback_ambiguous() -> None:
+    register = pd.DataFrame(
+        {
+            "key_uuid": ["u1", "u2"],
+            "key_npb": [93195138.0, 93190000.0],
+            "name_last": ["Tanaka", "Tanaka"],
+            "name_given": ["Shintaro", "Shintaro"],
+        }
+    )
+    cw = build_id_crosswalk(register)
+    assert cw["npb-name-Tanaka, Shintaro"] == ""

@@ -13,6 +13,7 @@ from pathlib import Path
 import pandas as pd
 
 from rosetta.ingest.loaders import load_all_seasons, load_transfers
+from rosetta.paths import SNAPSHOT_DIR
 
 HITTER_STATS = ["bb_pct", "k_pct", "iso", "babip", "hr_pct", "woba", "pa"]
 PITCHER_STATS = ["k_pct", "bb_pct", "hr_fb", "era", "fip", "ip"]
@@ -63,20 +64,29 @@ def pair_seasons(
             if tuid:
                 flg, tlg = rec["from_league"], rec["to_league"]
                 fs, ts = int(rec["from_season"]), int(rec["to_season"])
-                for vacancy, lg, s in [(pre, flg, fs), (post, tlg, ts)]:
-                    if vacancy is not None:
+                slots = [("pre", flg, fs), ("post", tlg, ts)]
+                for slot_name, lg, s in slots:
+                    if (slot_name == "pre" and pre is not None) or (
+                        slot_name == "post" and post is not None
+                    ):
                         continue
                     ukey = (tuid, s, lg)
                     if ukey in uuid_idx.index:
                         alt_row = uuid_idx.loc[ukey]
-                        alt_pid = str(alt_row["player_id"]) if not isinstance(alt_row, pd.DataFrame) else str(alt_row.iloc[0]["player_id"])
+                        alt_pid = (
+                            str(alt_row["player_id"])
+                            if not isinstance(alt_row, pd.DataFrame)
+                            else str(alt_row.iloc[0]["player_id"])
+                        )
                         alt_key = (alt_pid, s, lg)
                         if alt_key in pid_idx.index:
                             v = pid_idx.loc[alt_key]
                             if isinstance(v, pd.DataFrame):
                                 v = v.iloc[0]
-                            if vacancy is None:
-                                vacancy = v
+                            if slot_name == "pre":
+                                pre = v
+                            else:
+                                post = v
 
         if pre is None or post is None:
             continue
@@ -120,18 +130,28 @@ def build_cohort(
     pitchers = load_all_seasons(role="pitcher", snapshot_dir=snapshot_dir)
 
     crosswalk: dict[str, str] | None = None
-    if chadwick_path and chadwick_path.exists():
+    # Default to the snapshot register so cross-namespace links (npb-*,
+    # kbo-* vs mlbam-*) are always joined — without it only leagues sharing
+    # the mlbam- id space can pair.
+    resolved_chadwick = chadwick_path or (SNAPSHOT_DIR / "chadwick_people.csv")
+    if resolved_chadwick and Path(resolved_chadwick).exists():
         from rosetta.ingest.chadwick import build_id_crosswalk, load_register
 
-        register = load_register(chadwick_path)
+        register = load_register(resolved_chadwick)
         crosswalk = build_id_crosswalk(register)
 
     paired = pair_seasons(transfers, batters, pitchers, id_crosswalk=crosswalk)
     if paired.empty:
         return paired
 
-    batter_mask = (paired["role"] == "batter") & (paired["pre_pa"] >= min_pa) & (paired["post_pa"] >= min_pa)
+    batter_mask = (
+        (paired["role"] == "batter") & (paired["pre_pa"] >= min_pa) & (paired["post_pa"] >= min_pa)
+    )
     pitcher_mask = pd.Series(False, index=paired.index)
     if "pre_ip" in paired.columns and "post_ip" in paired.columns:
-        pitcher_mask = (paired["role"] == "pitcher") & (paired["pre_ip"] >= min_ip) & (paired["post_ip"] >= min_ip)
+        pitcher_mask = (
+            (paired["role"] == "pitcher")
+            & (paired["pre_ip"] >= min_ip)
+            & (paired["post_ip"] >= min_ip)
+        )
     return paired.loc[batter_mask | pitcher_mask].reset_index(drop=True)
