@@ -29,6 +29,8 @@ from rosetta.translate.api import translate_line
 
 _ROLES = ("batter", "pitcher")
 _LEAGUES = ("AAA", "MLB")
+_CALIBRATION_METHODS = {"none", "prior_affine"}
+_CALIBRATION_MIN_ROWS = 20
 
 
 def _finite(value: Any) -> bool:
@@ -227,6 +229,91 @@ def _score_metrics(details: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     return result
+
+
+def _fit_prior_affine(details: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
+    """Fit out-of-sample affine corrections from completed earlier folds.
+
+    ``details`` must contain predictions for target seasons strictly before the
+    fold being calibrated.  Keeping this helper independent from the current
+    target makes it difficult for a caller to accidentally tune on the holdout.
+    A minimum row count and finite-value checks keep sparse fixture folds on the
+    identity correction.  Residual spread is retained for widening calibrated
+    prediction intervals without using the current target.
+    """
+    if not details:
+        return {}
+    frame = pd.DataFrame(details)
+    corrections: dict[tuple[str, str], dict[str, Any]] = {}
+    for (role, stat), group in frame.groupby(["role", "stat"], sort=True):
+        prediction_column = "uncalibrated_prediction" if "uncalibrated_prediction" in group else "prediction"
+        x = pd.to_numeric(group[prediction_column], errors="coerce").to_numpy(dtype=float)
+        y = pd.to_numeric(group["actual"], errors="coerce").to_numpy(dtype=float)
+        finite = np.isfinite(x) & np.isfinite(y)
+        x = x[finite]
+        y = y[finite]
+        if len(x) < _CALIBRATION_MIN_ROWS:
+            continue
+        design = np.column_stack((np.ones(len(x), dtype=float), x))
+        intercept, slope = np.linalg.lstsq(design, y, rcond=None)[0]
+        if not all(_finite(value) for value in (intercept, slope)):
+            continue
+        residual = y - (intercept + slope * x)
+        residual_sd = float(np.std(residual, ddof=1)) if len(residual) > 1 else 0.0
+        residual_abs_q85 = float(np.quantile(np.abs(residual), 0.85)) if len(residual) else 0.0
+        corrections[(str(role), str(stat))] = {
+            "intercept": float(intercept),
+            "slope": float(slope),
+            "resid_sd": residual_sd if _finite(residual_sd) else 0.0,
+            "resid_abs_q85": residual_abs_q85 if _finite(residual_abs_q85) else 0.0,
+            "n": int(len(x)),
+        }
+    return corrections
+
+
+def _clip_calibrated(stat: str, value: float) -> float:
+    """Keep calibrated rates in the same physical domain as source metrics."""
+    if stat in {"bb_pct", "k_pct", "hr_pct", "babip", "iso", "woba", "hr_fb"}:
+        return float(np.clip(value, 0.0, 1.0))
+    if stat in {"era", "fip"}:
+        return float(max(0.5, value))
+    return float(value)
+
+
+def _apply_prior_affine(
+    payload: dict[str, Any], corrections: dict[tuple[str, str], dict[str, Any]]
+) -> None:
+    """Apply earlier-fold corrections and recompute detail metrics in place."""
+    for row in payload["detail"]:
+        key = (str(row["role"]), str(row["stat"]))
+        correction = corrections.get(key)
+        if correction is None:
+            row["calibration"] = "identity"
+            continue
+        if "uncalibrated_prediction" not in row:
+            row["uncalibrated_prediction"] = float(row["prediction"])
+            row["uncalibrated_lower"] = float(row["lower"])
+            row["uncalibrated_upper"] = float(row["upper"])
+        intercept = float(correction["intercept"])
+        slope = float(correction["slope"])
+        center = intercept + slope * float(row["uncalibrated_prediction"])
+        low = intercept + slope * float(row["uncalibrated_lower"])
+        high = intercept + slope * float(row["uncalibrated_upper"])
+        low, high = min(low, high), max(low, high)
+        residual_half = float(correction.get("resid_abs_q85", 1.28 * float(correction["resid_sd"])))
+        half = max((high - low) / 2.0, residual_half)
+        center = _clip_calibrated(str(row["stat"]), center)
+        low = _clip_calibrated(str(row["stat"]), center - half)
+        high = _clip_calibrated(str(row["stat"]), center + half)
+        row["prediction"] = center
+        row["lower"] = low
+        row["upper"] = high
+        row["error"] = center - float(row["actual"])
+        row["absolute_error"] = abs(row["error"])
+        row["covered_80"] = bool(low <= float(row["actual"]) <= high)
+        row["calibration"] = "prior_affine"
+        row["calibration_n"] = int(correction["n"])
+    payload["metrics"] = _score_metrics(payload["detail"])
 
 
 def run_historical_backtest(
@@ -442,6 +529,7 @@ def run_rolling_backtest(
     min_ip: float = 30.0,
     estimator: str = "ratio_of_means",
     era_floor: dict[str, int] | None = LEAGUE_ERA_FLOOR,
+    calibration: str = "prior_affine",
 ) -> dict[str, Any]:
     """Run `run_historical_backtest` independently per target season.
 
@@ -454,16 +542,24 @@ def run_rolling_backtest(
     ``era_floor`` defaults to `LEAGUE_ERA_FLOOR` and is passed through to
     every per-target `run_historical_backtest` call; pass ``None`` to
     disable the AAA ball-standardization floor for a comparison run.
+
+    ``calibration="prior_affine"`` fits a per-stat linear correction from
+    completed earlier target folds and applies it to the current fold.  The
+    current target is never included in its correction, so this is a
+    leakage-safe calibration step.  Pass ``calibration="none"`` for the raw
+    factor model comparison.
     """
     seasons = [int(season) for season in target_seasons]
     if not seasons:
         raise ValueError("target_seasons must be non-empty")
+    calibration = str(calibration).strip().lower()
+    if calibration not in _CALIBRATION_METHODS:
+        raise ValueError(
+            f"unknown calibration {calibration!r}; expected one of {sorted(_CALIBRATION_METHODS)}"
+        )
 
-    by_target: dict[str, Any] = {}
+    raw_by_target: dict[str, Any] = {}
     skipped: list[dict[str, Any]] = []
-    all_detail: list[dict[str, Any]] = []
-    summary: list[dict[str, Any]] = []
-    excluded_era_floor_total = 0
 
     for season in seasons:
         try:
@@ -480,20 +576,57 @@ def run_rolling_backtest(
         except ValueError as exc:
             skipped.append({"target_season": season, "reason": str(exc)})
             continue
-        by_target[str(season)] = payload
-        excluded_era_floor_total += int(
-            payload["metadata"]["counts"].get("training_pairs_excluded_era_floor", 0)
+        raw_by_target[str(season)] = payload
+
+    if not raw_by_target:
+        raise ValueError(
+            "all requested target seasons were skipped for insufficient real data: "
+            f"{skipped}"
         )
+
+    by_target: dict[str, Any] = {}
+    all_detail: list[dict[str, Any]] = []
+    summary: list[dict[str, Any]] = []
+    calibration_fits: dict[str, dict[str, dict[str, Any]]] = {}
+    if calibration == "prior_affine":
+        # Preserve the raw out-of-fold predictions before any target payload is
+        # calibrated.  Later folds must fit from the same raw factor output,
+        # rather than recursively fitting on an already corrected fold.
+        for payload in raw_by_target.values():
+            for row in payload["detail"]:
+                row["uncalibrated_prediction"] = float(row["prediction"])
+                row["uncalibrated_lower"] = float(row["lower"])
+                row["uncalibrated_upper"] = float(row["upper"])
+    for season in sorted(int(key) for key in raw_by_target):
+        payload = raw_by_target[str(season)]
+        prior_details = [
+            {**row, "target_season": prior_season}
+            for prior_season, prior_payload in raw_by_target.items()
+            if int(prior_season) < season
+            for row in prior_payload["detail"]
+        ]
+        corrections = _fit_prior_affine(prior_details) if calibration == "prior_affine" else {}
+        if calibration == "prior_affine":
+            _apply_prior_affine(payload, corrections)
+            calibration_fits[str(season)] = {
+                f"{role}:{stat}": values for (role, stat), values in corrections.items()
+            }
+        payload["metadata"]["parameters"]["calibration"] = calibration
+        payload["metadata"]["calibration"] = {
+            "method": calibration,
+            "fit_target_seasons": sorted({int(row["target_season"]) for row in prior_details}),
+            "fits": calibration_fits.get(str(season), {}),
+        }
+        by_target[str(season)] = payload
         for row in payload["detail"]:
             all_detail.append({"target_season": season, **row})
         for row in payload["metrics"]:
             summary.append({"target_season": season, **row})
 
-    if not by_target:
-        raise ValueError(
-            "all requested target seasons were skipped for insufficient real data: "
-            f"{skipped}"
-        )
+    excluded_era_floor_total = sum(
+        int(payload["metadata"]["counts"].get("training_pairs_excluded_era_floor", 0))
+        for payload in by_target.values()
+    )
 
     pooled = _score_metrics(all_detail)
 
@@ -507,6 +640,7 @@ def run_rolling_backtest(
             "min_ip": float(min_ip),
             "estimator": str(estimator),
             "era_floor": dict(era_floor) if era_floor else None,
+            "calibration": calibration,
         },
         "counts": {
             "training_pairs_excluded_era_floor": excluded_era_floor_total,

@@ -32,6 +32,17 @@ def test_showcase_refuses_non_real_bundle(tmp_path: Path, monkeypatch) -> None:
     assert result == {"error": "Showcase data is not real-data-only; refusing to render numbers."}
 
 
+def test_showcase_refuses_synthetic_backtest_even_with_real_board(tmp_path: Path, monkeypatch) -> None:
+    bundle = tmp_path / "demo"
+    _write_bundle(bundle, data_mode="real")
+    (bundle / "backtest.json").write_text(json.dumps({"data_mode": "synthetic"}))
+    monkeypatch.setattr(leaderboard_app, "SHOWCASE_BUNDLE", bundle)
+
+    result = leaderboard_app._load_showcase()
+
+    assert result == {"error": "Showcase data is not real-data-only; refusing to render numbers."}
+
+
 def test_showcase_error_state_renders() -> None:
     html = leaderboard_app.TEMPLATES.get_template("showcase.html").render(
         data={"error": "Showcase data is not exported yet."}
@@ -85,3 +96,28 @@ def test_analysis_template_has_human_readable_guardrails() -> None:
         data={"error": "Analysis data is not exported yet."}
     )
     assert "Analysis data is not exported yet." in html
+
+
+def test_showcase_does_not_duplicate_the_full_scoreboard() -> None:
+    metric = {
+        "role": "batter", "stat": "woba", "n": 1,
+        "mae": 0.02, "baseline_mae": 0.03, "coverage_80": 0.8,
+    }
+    payload = {
+        "meta": {"backtest_target_season": 2025, "generated_at": "2026-09-21"},
+        "leaderboard": {"data_mode": "real", "boards": {"batter": [], "pitcher": []}},
+        "backtest": {
+            "data_mode": "real",
+            "validation": {"model_wins": 1, "metric_count": 1},
+            "target_season_2025": {"metrics": [metric]},
+            "rolling_2022_2025": {
+                "target_seasons": [], "summary_by_season": [],
+            },
+        },
+    }
+
+    html = leaderboard_app.TEMPLATES.get_template("showcase.html").render(data=payload)
+
+    assert "Top batters" not in html
+    assert "Top pitchers" not in html
+    assert "/analysis" in html

@@ -80,6 +80,9 @@ def test_rolling_backtest_skips_target_with_no_training_and_pools_correctly(
         season = int(season_key)
         for pair in target_payload["training_pairs"]:
             assert pair["to_season"] < season
+        calibration = target_payload["metadata"]["calibration"]
+        assert calibration["method"] == "prior_affine"
+        assert all(fold < season for fold in calibration["fit_target_seasons"])
 
     # Pooled n equals sum of per-target n for each (role, stat).
     per_target_n: dict[tuple[str, str], int] = {}
@@ -113,6 +116,39 @@ def test_rolling_backtest_estimator_recorded_and_propagated(tmp_path: Path, monk
         assert target_payload["metadata"]["parameters"]["estimator"] == "ratio_of_means"
 
 
+def test_rolling_calibration_does_not_read_current_target_actuals(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = _rolling_fixture(tmp_path)
+    monkeypatch.setattr(historical, "SNAPSHOT_DIR", root)
+    # The small fixture deliberately exercises the correction path without
+    # needing a large synthetic cohort.
+    monkeypatch.setattr(historical, "_CALIBRATION_MIN_ROWS", 1)
+
+    before = run_rolling_backtest(target_seasons=[2023, 2024, 2025], n_boot=1, min_pa=80)
+    before_target = before["by_target"]["2025"]
+    frame = pd.read_csv(root / "mlb_batters.csv")
+    frame.loc[frame["season"] == 2025, "woba"] = 0.99
+    frame.to_csv(root / "mlb_batters.csv", index=False)
+
+    after = run_rolling_backtest(target_seasons=[2023, 2024, 2025], n_boot=1, min_pa=80)
+    after_target = after["by_target"]["2025"]
+
+    assert before_target["metadata"]["calibration"] == after_target["metadata"]["calibration"]
+    before_predictions = [
+        (row["player_id"], row["stat"], row["prediction"], row["lower"], row["upper"])
+        for row in before_target["detail"]
+    ]
+    after_predictions = [
+        (row["player_id"], row["stat"], row["prediction"], row["lower"], row["upper"])
+        for row in after_target["detail"]
+    ]
+    assert before_predictions == after_predictions
+    for row in before_target["detail"]:
+        assert row["lower"] <= row["prediction"] <= row["upper"]
+        assert row["upper"] - row["lower"] >= 0
+
+
 def test_rolling_backtest_all_targets_skipped_raises(tmp_path: Path, monkeypatch) -> None:
     root = _rolling_fixture(tmp_path)
     monkeypatch.setattr(historical, "SNAPSHOT_DIR", root)
@@ -121,6 +157,14 @@ def test_rolling_backtest_all_targets_skipped_raises(tmp_path: Path, monkeypatch
     # and (being the only target requested) the whole run must raise.
     with pytest.raises(ValueError, match="skipped"):
         run_rolling_backtest(target_seasons=[2021], n_boot=1, min_pa=80)
+
+
+def test_rolling_backtest_rejects_unknown_calibration(tmp_path: Path, monkeypatch) -> None:
+    root = _rolling_fixture(tmp_path)
+    monkeypatch.setattr(historical, "SNAPSHOT_DIR", root)
+
+    with pytest.raises(ValueError, match="unknown calibration"):
+        run_rolling_backtest(target_seasons=[2023], n_boot=1, min_pa=80, calibration="target")
 
 
 def test_write_rolling_report_writes_expected_artifacts(tmp_path: Path, monkeypatch) -> None:

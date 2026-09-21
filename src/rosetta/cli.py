@@ -92,6 +92,9 @@ def historical_rolling_cmd(
     min_pa: float = typer.Option(80.0, help="Minimum source and target batter PA"),
     min_ip: float = typer.Option(30.0, help="Minimum source and target pitcher IP"),
     estimator: str = typer.Option("ratio_of_means", help="Link estimator: ratio_of_means (default) or mean_ratio"),
+    calibration: str = typer.Option(
+        "prior_affine", help="Rolling-only prior-fold calibration: prior_affine (default) or none"
+    ),
     no_era_floor: bool = typer.Option(
         False, "--no-era-floor", help="Disable the AAA 2019 ball-standardization era floor (comparison runs only)"
     ),
@@ -112,6 +115,7 @@ def historical_rolling_cmd(
             min_pa=min_pa,
             min_ip=min_ip,
             estimator=estimator,
+            calibration=calibration,
             era_floor=None if no_era_floor else LEAGUE_ERA_FLOOR,
         )
         paths = write_rolling_report(payload, out_dir)
@@ -123,7 +127,8 @@ def historical_rolling_cmd(
     skipped = metadata.get("skipped", [])
     rprint(
         f"[green]Historical rolling backtest:[/green] targets {metadata.get('target_seasons', seasons)}; "
-        f"estimator {metadata.get('parameters', {}).get('estimator', estimator)}"
+        f"estimator {metadata.get('parameters', {}).get('estimator', estimator)}; "
+        f"calibration {metadata.get('parameters', {}).get('calibration', calibration)}"
     )
     if skipped:
         for item in skipped:

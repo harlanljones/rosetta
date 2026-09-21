@@ -36,7 +36,7 @@ make backtest      # fit factors + holdout → prints RMSE/coverage per stat
 make historical-backtest  # real adjacent-season AAA→MLB validation report
 make historical-rolling   # same, refit and scored independently per target season
 make leaderboard   # top 50 foreign players with MLB-equivalent lines
-make showcase-data # export the three-file, real-data-only portfolio bundle
+make showcase-data # export the real-data-only portfolio bundle
 make serve-leaderboard  # http://127.0.0.1:8000
 ```
 
@@ -51,11 +51,17 @@ observed MLB playing time, not a promotion or playing-time forecast.
 
 The FastAPI app serves the narrative proof page at
 [`/showcase`](http://127.0.0.1:8000/showcase). It reads only the static bundle
-under `data/outputs/demo/` — `meta.json`, `leaderboard.json`, and `backtest.json`
-— and refuses to render numbers unless the bundle declares `data_mode: "real"`.
-The page leads with the 2026 season-to-date backtest (2025 AAA inputs → 2026
-MLB outcomes), shows all 11 metric rows and the 2022–2026 rolling comparison,
-then links to the full leaderboard at `/`.
+under `data/outputs/demo/` — `meta.json`, `leaderboard.json`, `backtest.json`,
+and `analysis.json` — and refuses to render numbers unless the bundle declares
+`data_mode: "real"`.
+The page leads with the current target-season backtest (prior AAA inputs → MLB
+outcomes), shows all evaluated metric rows and the available rolling comparison,
+then links to the full leaderboard at `/`. The separate `/analysis` route is a
+diagnostic report: it keeps each stat in native units and adds bias, calibration
+against the 80% interval target, baseline win rate, error buckets, and a
+current-season player drilldown.
+The result is retrospective; the 2026 fold was inspected while comparing
+candidate model and interval rules, so it is not an untouched selection holdout.
 
 Build or refresh the bundle with:
 

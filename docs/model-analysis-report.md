@@ -8,28 +8,60 @@ prior AAA value?”).
 
 ## What the page reports
 
-- 2026 wOBA and FIP scorecards against the prior AAA value.
+- Current-season wOBA and FIP scorecards against the prior AAA value.
 - Player-level signed error, absolute error, baseline improvement, interval
   status, and stat-specific error buckets.
-- Rolling 2022–2026 summaries, with the baseline shown beside each model MAE.
+- A stat-by-stat calibration table covering bias, interval coverage versus the
+  nominal 80% target, baseline win rate, interval width, and error-size buckets.
+- A player drilldown that keeps the prior, prediction, outcome, uncertainty
+  band, and baseline improvement in the same native stat units.
+- Rolling target-season summaries, with the baseline shown beside each model MAE.
 - The largest current-season and historical wOBA/FIP misses.
 - Guardrails distinguishing observed error patterns from causal explanations.
 
 `analysis.json` is exported by `scripts/export_demo.py` from the player-level
 `historical-rolling.json` detail. It is real-data-only and carries
-`schema_version: "analysis.v1"`.
+`schema_version: "analysis.v2"`. The export derives the number of baseline wins
+from the metric rows, so the demo does not rely on a hardcoded statistic count.
 
 ## Interpretation rules
 
 `signed_error = prediction - actual`; positive means the model overpredicted.
 `improvement = abs(prior - actual) - abs(prediction - actual)`; positive means
-Rosetta beat the persistence baseline. Error buckets are scale-aware: wOBA
-uses `.025/.050/.075`, while FIP uses `.5/1.0/1.5`.
+Rosetta beat the persistence baseline. `bias` is the mean signed error in the
+stat's native units. Error buckets are scale-aware: rate stats use
+`.025/.050/.075`, while FIP uses `.5/1.0/1.5`. Coverage is compared with the
+nominal 80% target and is reported per stat; unlike the old role summary, the
+page never pools wOBA and FIP into one mixed-unit number.
 
 The page deliberately avoids claiming that a residual identifies a cause.
 Role changes, parks, injuries, playing time, and sample noise require human
 review and are not inferable from the backtest alone. The 80% band is a cohort
 calibration signal, not an individualized probability of success.
+
+## Current calibrated rolling result
+
+The current `historical-rolling.json` artifact uses the leakage-safe
+`prior_affine` calibration: each stat's correction is fit from completed target
+seasons strictly earlier than the season being scored, with a minimum of 20
+rows. On the 2026 holdout, calibrated wOBA MAE is `0.0322` versus `0.0670` for
+the persistence baseline, with `83.4%` interval coverage. Calibrated FIP MAE is
+`0.640` versus `0.975`, with `88.2%` coverage.
+
+Across the pooled 2022–2026 rolling folds, wOBA MAE is `0.0381` versus `0.0775`
+and FIP MAE is `0.797` versus `1.016`; coverage is `82.8%` and `85.1%`,
+respectively. These are internal adjacent AAA → MLB holdouts over players with
+observed MLB playing time. The target-season sample is partial, the correction
+is estimated from a small historical cohort, and FIP remains more variable than
+wOBA. The result is evidence that the calibrated translation improves this
+backtest, not a guarantee for new players or an apples-to-apples ranking against
+MLB-only projection systems.
+
+This is a retrospective evaluation, not an untouched model-selection holdout:
+the 2026 fold was inspected while comparing candidate model and interval rules.
+The per-fold `prior_affine` correction still fits only target seasons earlier
+than the scored season, but the 2026 inspection limits how strongly this result
+should be generalized.
 
 ## External preseason comparison
 

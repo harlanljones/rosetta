@@ -58,7 +58,7 @@ def _load_showcase() -> dict:
         if not path.exists():
             return {"error": "Showcase data is not exported yet. Run `python scripts/export_demo.py`."}
         payload[name] = json.loads(path.read_text())
-    if payload["meta"].get("data_mode") != "real" or payload["leaderboard"].get("data_mode") != "real":
+    if any(payload[name].get("data_mode") != "real" for name in ("meta", "leaderboard", "backtest")):
         return {"error": "Showcase data is not real-data-only; refusing to render numbers."}
     return payload
 

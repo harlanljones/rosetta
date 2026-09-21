@@ -79,10 +79,18 @@ def _round_metric_record(record: dict[str, Any]) -> dict[str, Any]:
     is_era_like = record.get("stat") in ERA_LIKE_FIELDS
     out: dict[str, Any] = {}
     for key, value in sorted(record.items()):
-        if key in ("mae", "rmse", "baseline_mae", "baseline_rmse"):
-            out[key] = round(float(value), 3 if is_era_like else 4)
-        elif key == "coverage_80":
-            out[key] = round(float(value), 3)
+        if key in (
+            "mae",
+            "rmse",
+            "baseline_mae",
+            "baseline_rmse",
+            "bias",
+            "baseline_improvement",
+            "mean_interval_width",
+        ):
+            out[key] = round(float(value), 3 if is_era_like else 4) if value is not None else None
+        elif key in ("coverage_80", "coverage_target", "coverage_delta", "interval_miss_rate", "mean_interval_position", "baseline_win_rate"):
+            out[key] = round(float(value), 3) if value is not None else None
         else:
             out[key] = value
     return out
@@ -225,14 +233,29 @@ def build_backtest(
     if metadata.get("data_mode") != "real":
         raise SystemExit("Refusing to export backtest: metadata.data_mode is not 'real'.")
 
+    # The standalone target artifact is intentionally an uncalibrated audit
+    # run.  When the rolling artifact contains the same target fold, prefer it
+    # for the public target card and player drilldown so the showcase cannot
+    # combine raw target metrics with calibrated rolling analysis.
+    rolling_target = rolling_raw.get("by_target", {}).get(str(target_season), {})
+    use_rolling_target = (
+        rolling_raw.get("metadata", {}).get("data_mode") == "real"
+        and isinstance(rolling_target, dict)
+        and bool(rolling_target.get("metrics"))
+    )
+    target_payload = rolling_target if use_rolling_target else backtest_raw
+    target_metadata = target_payload.get("metadata", {})
+    calibration = target_metadata.get("calibration", {})
+    calibration_method = (
+        calibration.get("method") if isinstance(calibration, dict) else None
+    ) or rolling_raw.get("metadata", {}).get("parameters", {}).get("calibration")
+
     metrics = sorted(
-        (_round_metric_record(m) for m in backtest_raw.get("metrics", [])),
+        (_round_metric_record(m) for m in target_payload.get("metrics", [])),
         key=lambda m: (m["role"], m["stat"]),
     )
-    if len(metrics) != 11:
-        raise SystemExit(
-            f"Expected 11 role/stat metric rows for the {target_season} backtest, found {len(metrics)}."
-        )
+    if not metrics:
+        raise SystemExit(f"No role/stat metric rows found for the {target_season} backtest.")
 
     rolling_summary = sorted(
         (_round_metric_record(m) for m in rolling_raw.get("summary", [])),
@@ -243,7 +266,7 @@ def build_backtest(
         key=lambda m: (m["role"], m["stat"]),
     )
 
-    detail = backtest_raw.get("detail", [])
+    detail = target_payload.get("detail", [])
     player_rows: dict[str, list[dict[str, Any]]] = {"batter_woba": [], "pitcher_fip": []}
     for row in detail:
         stat = row.get("stat")
@@ -275,7 +298,14 @@ def build_backtest(
     for key in player_rows:
         player_rows[key] = sorted(player_rows[key], key=lambda r: (r["player_name"], r["player_id"]))
 
+    model_wins = sum(
+        1 for metric in metrics
+        if metric.get("mae") is not None
+        and metric.get("baseline_mae") is not None
+        and metric["mae"] < metric["baseline_mae"]
+    )
     return {
+        "data_mode": "real",
         f"target_season_{target_season}": {
             "metrics": metrics,
         },
@@ -283,6 +313,16 @@ def build_backtest(
             "target_seasons": sorted(rolling_raw.get("metadata", {}).get("target_seasons", [])),
             "summary_by_season": rolling_summary,
             "pooled": rolling_pooled,
+        },
+        "validation": {
+            "metric_count": len(metrics),
+            "model_wins": model_wins,
+            "baseline_wins": len(metrics) - model_wins,
+            "model_win_rate": model_wins / len(metrics),
+        },
+        "evaluation": {
+            "source": "historical-rolling target fold" if use_rolling_target else "historical-backtest artifact",
+            "calibration": calibration_method or "none",
         },
         "player_predictions": player_rows,
     }
@@ -357,6 +397,14 @@ def _analysis_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         abs_errors = [r["absolute_error"] for r in group if r["absolute_error"] is not None]
         baseline_errors = [r["baseline_absolute_error"] for r in group if r["baseline_absolute_error"] is not None]
         covered = [r["covered_80"] for r in group if isinstance(r["covered_80"], bool)]
+        improvements = [r["improvement"] for r in group if r["improvement"] is not None]
+        widths = [r["interval_width"] for r in group if r["interval_width"] is not None]
+        positions = [r["interval_position"] for r in group if r["interval_position"] is not None]
+        bucket_counts = {
+            bucket: sum(r["error_bucket"] == bucket for r in group)
+            for bucket in ("small", "moderate", "large", "extreme")
+        }
+        bucket_limits = (0.5, 1.0, 1.5) if stat in ERA_LIKE_FIELDS else (0.025, 0.05, 0.075)
         summary.append(
             _round_metric_record(
                 {
@@ -366,9 +414,37 @@ def _analysis_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "n": len(group),
                     "mae": sum(abs_errors) / len(abs_errors) if abs_errors else None,
                     "baseline_mae": sum(baseline_errors) / len(baseline_errors) if baseline_errors else None,
+                    "baseline_improvement": (
+                        sum(improvements) / len(improvements) if improvements else None
+                    ),
+                    "baseline_win_rate": (
+                        sum(improvement > 0 for improvement in improvements) / len(improvements)
+                        if improvements else None
+                    ),
                     "bias": sum(errors) / len(errors) if errors else None,
                     "overprediction_rate": sum(e > 0 for e in errors) / len(errors) if errors else None,
                     "coverage_80": sum(covered) / len(covered) if covered else None,
+                    "coverage_target": 0.8,
+                    "coverage_delta": (
+                        sum(covered) / len(covered) - 0.8 if covered else None
+                    ),
+                    "interval_miss_rate": (
+                        1 - sum(covered) / len(covered) if covered else None
+                    ),
+                    "mean_interval_width": sum(widths) / len(widths) if widths else None,
+                    "mean_interval_position": sum(positions) / len(positions) if positions else None,
+                    "error_buckets": [
+                        {
+                            "bucket": bucket,
+                            "n": count,
+                            "share": count / len(group) if group else None,
+                            "upper_limit": limit,
+                        }
+                        for bucket, count, limit in zip(
+                            bucket_counts, bucket_counts.values(),
+                            (*bucket_limits, None), strict=False,
+                        )
+                    ],
                 }
             )
         )
@@ -409,23 +485,32 @@ def build_analysis(rolling_raw: dict[str, Any]) -> dict[str, Any]:
                     "season": current_season,
                     "role": role,
                     "n": len(role_rows),
-                    "mae": sum(errors) / len(errors),
-                    "bias": sum(signed) / len(signed),
-                    "overprediction_rate": sum(error > 0 for error in signed) / len(signed),
-                    "coverage_80": sum(covered) / len(covered),
+                    "mae": sum(errors) / len(errors) if errors else None,
+                    "bias": sum(signed) / len(signed) if signed else None,
+                    "overprediction_rate": sum(error > 0 for error in signed) / len(signed)
+                    if signed else None,
+                    "coverage_80": sum(covered) / len(covered) if covered else None,
                 }
             )
         )
 
     return {
-        "schema_version": "analysis.v1",
+        "schema_version": "analysis.v2",
         "data_mode": "real",
         "current_season": current_season,
         "featured_stats": ["woba", "fip"],
         "definitions": {
             "signed_error": "prediction - actual; positive means the model overpredicted",
+            "bias": "mean signed error in the stat's native units; positive means overprediction",
+            "baseline_improvement": "baseline MAE minus model MAE; positive means the model is better",
+            "coverage_delta": "observed 80% interval coverage minus the nominal 0.80 target",
             "coverage_80": "share of observed outcomes inside the model's 80% interval",
+            "error_buckets": "counts using stat-specific absolute-error thresholds",
             "interpretation": "Observed error patterns are descriptive; possible causes are hypotheses, not causal findings.",
+        },
+        "provenance": {
+            "evaluation": "Retrospective adjacent AAA-to-MLB evaluation for players with observed MLB playing time.",
+            "selection_caveat": "The 2026 fold was inspected while comparing candidate model and interval rules; its per-fold calibration still fits only earlier target seasons, but 2026 is not an untouched selection holdout.",
         },
         "scope": {
             "seasons": sorted({row["season"] for row in rows}),
@@ -441,9 +526,17 @@ def build_analysis(rolling_raw: dict[str, Any]) -> dict[str, Any]:
             ),
             key=lambda metric: (metric["role"], metric["stat"]),
         ),
+        "current_stat_summary": [
+            summary for summary in _analysis_summary(rows)
+            if summary["target_season"] == current_season
+        ],
         "current_role_summary": role_summary,
         "current_featured_misses": top_current,
         "historical_featured_misses": top_historical,
+        "current_player_rows": sorted(
+            current_featured,
+            key=lambda row: (row["player_name"], row["stat"]),
+        ),
     }
 
 
@@ -456,6 +549,13 @@ def build_meta(
     bt_meta = backtest_raw.get("metadata", {})
     roll_meta = rolling_raw.get("metadata", {})
     params = bt_meta.get("parameters", {})
+    rolling_target = rolling_raw.get("by_target", {}).get(str(bt_meta.get("target_season")), {})
+    target_calibration = rolling_target.get("metadata", {}).get("calibration", {})
+    calibration_method = (
+        target_calibration.get("method")
+        if isinstance(target_calibration, dict)
+        else None
+    ) or roll_meta.get("parameters", {}).get("calibration") or "none"
 
     # Deterministic timestamp: derived from the source artifacts' own
     # filesystem mtimes (max across inputs), never wall-clock "now". Given a
@@ -477,6 +577,9 @@ def build_meta(
         "training to avoid mixing run environments.",
         "Bootstrap resamples rows, not player clusters; intervals are "
         "approximate for players with few comparable transferred pairs.",
+        "The 2026 fold was inspected while comparing candidate model and interval "
+        "rules; per-fold calibration still fits only earlier target seasons, but "
+        "this is not an untouched selection holdout.",
         "This is a static, point-in-time export — not a live/hosted runtime.",
     ]
 
@@ -486,6 +589,12 @@ def build_meta(
         "rosetta_git_commit": git_short_sha(),
         "estimator": params.get("estimator"),
         "era_floor": params.get("era_floor"),
+        "calibration": calibration_method,
+        "evaluation_source": (
+            "historical-rolling target fold"
+            if rolling_target.get("metrics") and roll_meta.get("data_mode") == "real"
+            else "historical-backtest artifact"
+        ),
         "source_counts": leaderboard_raw.get("source_counts", {}),
         "backtest_source_season": bt_meta.get("source_season"),
         "backtest_target_season": bt_meta.get("target_season"),
