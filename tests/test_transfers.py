@@ -7,11 +7,39 @@ import pandas as pd
 from rosetta.ingest.transfers import generate_transfers
 
 
-def test_generate_transfers_empty_without_register(tmp_path: Path) -> None:
+def test_generate_transfers_empty_with_empty_register(tmp_path: Path) -> None:
+    """Test that an empty Chadwick register produces no transfers.
+
+    Passes a header-only register file instead of None to avoid FileNotFoundError
+    in CI environments where data/snapshots/chadwick_people.csv is gitignored.
+    Production behavior (raising on missing register) is preserved.
+    """
     from rosetta.ingest.generate_snapshots import build_snapshots
 
     root = build_snapshots(out_dir=tmp_path, seed=1)
-    t = generate_transfers(register_path=None, snapshot_dir=root, max_season_gap=1)
+
+    # Create a header-only Chadwick register with the columns that
+    # load_register and build_id_crosswalk expect
+    register_path = tmp_path / "chadwick_people.csv"
+    register_df = pd.DataFrame(columns=[
+        "key_uuid",
+        "key_mlbam",
+        "key_retro",
+        "key_bbref",
+        "key_bbref_minors",
+        "key_fangraphs",
+        "key_npb",
+        "key_kbo",
+        "name_last",
+        "name_first",
+        "name_given",
+        "birth_year",
+        "mlb_played_first",
+        "mlb_played_last",
+    ])
+    register_df.to_csv(register_path, index=False)
+
+    t = generate_transfers(register_path=register_path, snapshot_dir=root, max_season_gap=1)
     assert t.empty
 
 

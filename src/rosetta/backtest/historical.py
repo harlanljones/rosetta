@@ -100,7 +100,7 @@ def _prepare(df: pd.DataFrame, *, league: str, target_season: int, role: str) ->
     for field in ("player_id", "source"):
         blank = out[field].isna() | out[field].map(
             lambda value: str(value).strip().lower() in {"", "nan", "none"}
-        )
+        ).astype(bool)
         if blank.any():
             raise ValueError(f"{league} {role} snapshot has blank {field} on real relevant lines")
     observed_leagues = out["league"].astype(str).str.strip().str.upper()
