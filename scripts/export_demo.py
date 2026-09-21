@@ -4,7 +4,7 @@ Reads already-generated artifacts (``data/outputs/leaderboard.json``,
 ``data/outputs/historical-backtest-{target}/historical-backtest.json``,
 ``data/outputs/historical-rolling/historical-rolling.json``) and writes a
 small, self-describing bundle (``meta.json``, ``leaderboard.json``,
-``backtest.json``) intended to be copied verbatim into a separate static
+``backtest.json``, ``analysis.json``) intended to be copied verbatim into a separate static
 site. This script never touches the network and never regenerates data with
 different parameters than what is already on disk — it only shells out to
 ``make`` targets (offline) when an expected artifact is missing.
@@ -288,6 +288,165 @@ def build_backtest(
     }
 
 
+def _analysis_row(row: dict[str, Any], target_season: int) -> dict[str, Any]:
+    """Make one player error legible without hiding the model's uncertainty."""
+    prediction = row.get("prediction")
+    actual = row.get("actual")
+    prior = row.get("prior")
+    lower = row.get("lower")
+    upper = row.get("upper")
+    signed_error = prediction - actual if isinstance(prediction, (int, float)) and isinstance(actual, (int, float)) else None
+    baseline_signed_error = prior - actual if isinstance(prior, (int, float)) and isinstance(actual, (int, float)) else None
+    baseline_absolute_error = abs(baseline_signed_error) if baseline_signed_error is not None else None
+    absolute_error = row.get("absolute_error")
+    improvement = baseline_absolute_error - absolute_error if baseline_absolute_error is not None and absolute_error is not None else None
+    interval_width = upper - lower if isinstance(lower, (int, float)) and isinstance(upper, (int, float)) else None
+    position = (actual - lower) / interval_width if interval_width and isinstance(actual, (int, float)) else None
+    role = row.get("role")
+    stat = row.get("stat")
+    precision = 3 if stat in ERA_LIKE_FIELDS else 4
+    bucket_limits = (0.5, 1.0, 1.5) if stat in ERA_LIKE_FIELDS else (0.025, 0.05, 0.075)
+    error_bucket = (
+        "small" if absolute_error is not None and absolute_error < bucket_limits[0]
+        else "moderate" if absolute_error is not None and absolute_error < bucket_limits[1]
+        else "large" if absolute_error is not None and absolute_error < bucket_limits[2]
+        else "extreme" if absolute_error is not None else None
+    )
+    rounded = _round_record(
+        {
+            "season": target_season,
+            "player_id": row.get("player_id"),
+            "player_name": row.get("player_name"),
+            "role": role,
+            "stat": stat,
+            "from_league": row.get("from_league"),
+            "predicted": prediction,
+            "actual": actual,
+            "prior": prior,
+            "lower": lower,
+            "upper": upper,
+            "signed_error": signed_error,
+            "absolute_error": absolute_error,
+            "baseline_signed_error": baseline_signed_error,
+            "baseline_absolute_error": baseline_absolute_error,
+            "improvement": improvement,
+            "error_bucket": error_bucket,
+            "direction": "over" if signed_error and signed_error > 0 else "under" if signed_error and signed_error < 0 else "even",
+            "covered_80": row.get("covered_80"),
+            "interval_miss": row.get("covered_80") is False,
+            "interval_midpoint": (lower + upper) / 2 if isinstance(lower, (int, float)) and isinstance(upper, (int, float)) else None,
+            "interval_width": interval_width,
+            "interval_position": position,
+            "sample": row.get("post_sample"),
+        }
+    )
+    for key in ("signed_error", "absolute_error", "interval_width", "interval_position"):
+        if isinstance(rounded.get(key), (int, float)):
+            rounded[key] = round(float(rounded[key]), precision)
+    return rounded
+
+
+def _analysis_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Aggregate player errors by season, role, and stat for the report UI."""
+    groups: dict[tuple[int, str, str], list[dict[str, Any]]] = {}
+    for row in rows:
+        groups.setdefault((row["season"], row["role"], row["stat"]), []).append(row)
+    summary = []
+    for (season, role, stat), group in sorted(groups.items()):
+        errors = [r["signed_error"] for r in group if r["signed_error"] is not None]
+        abs_errors = [r["absolute_error"] for r in group if r["absolute_error"] is not None]
+        baseline_errors = [r["baseline_absolute_error"] for r in group if r["baseline_absolute_error"] is not None]
+        covered = [r["covered_80"] for r in group if isinstance(r["covered_80"], bool)]
+        summary.append(
+            _round_metric_record(
+                {
+                    "target_season": season,
+                    "role": role,
+                    "stat": stat,
+                    "n": len(group),
+                    "mae": sum(abs_errors) / len(abs_errors) if abs_errors else None,
+                    "baseline_mae": sum(baseline_errors) / len(baseline_errors) if baseline_errors else None,
+                    "bias": sum(errors) / len(errors) if errors else None,
+                    "overprediction_rate": sum(e > 0 for e in errors) / len(errors) if errors else None,
+                    "coverage_80": sum(covered) / len(covered) if covered else None,
+                }
+            )
+        )
+    return summary
+
+
+def build_analysis(rolling_raw: dict[str, Any]) -> dict[str, Any]:
+    """Build the player-error layer that bridges metrics and scouting language."""
+    metadata = rolling_raw.get("metadata", {})
+    if metadata.get("data_mode") != "real":
+        raise SystemExit("Refusing to export analysis: rolling metadata.data_mode is not 'real'.")
+
+    rows: list[dict[str, Any]] = []
+    for season, payload in sorted(rolling_raw.get("by_target", {}).items(), key=lambda item: int(item[0])):
+        rows.extend(_analysis_row(row, int(season)) for row in payload.get("detail", []))
+    if not rows:
+        raise SystemExit("Refusing to export analysis: rolling backtest has no player-level detail.")
+
+    current_season = max(row["season"] for row in rows)
+    featured_stats = {("batter", "woba"), ("pitcher", "fip")}
+    featured = [row for row in rows if (row["role"], row["stat"]) in featured_stats]
+    current_featured = [row for row in featured if row["season"] == current_season]
+    top_current = sorted(current_featured, key=lambda row: (-row["absolute_error"], row["player_name"]))[:12]
+    top_historical = sorted(featured, key=lambda row: (-row["absolute_error"], row["player_name"]))[:16]
+
+    role_summary = []
+    for role in ("batter", "pitcher"):
+        role_rows = [
+            row for row in current_featured
+            if row["season"] == current_season and row["role"] == role
+        ]
+        errors = [row["absolute_error"] for row in role_rows]
+        signed = [row["signed_error"] for row in role_rows]
+        covered = [row["covered_80"] for row in role_rows if isinstance(row["covered_80"], bool)]
+        role_summary.append(
+            _round_record(
+                {
+                    "season": current_season,
+                    "role": role,
+                    "n": len(role_rows),
+                    "mae": sum(errors) / len(errors),
+                    "bias": sum(signed) / len(signed),
+                    "overprediction_rate": sum(error > 0 for error in signed) / len(signed),
+                    "coverage_80": sum(covered) / len(covered),
+                }
+            )
+        )
+
+    return {
+        "schema_version": "analysis.v1",
+        "data_mode": "real",
+        "current_season": current_season,
+        "featured_stats": ["woba", "fip"],
+        "definitions": {
+            "signed_error": "prediction - actual; positive means the model overpredicted",
+            "coverage_80": "share of observed outcomes inside the model's 80% interval",
+            "interpretation": "Observed error patterns are descriptive; possible causes are hypotheses, not causal findings.",
+        },
+        "scope": {
+            "seasons": sorted({row["season"] for row in rows}),
+            "player_stat_rows": len(rows),
+            "featured_player_stat_rows": len(featured),
+            "source": "historical-rolling.json detail",
+        },
+        "summary_by_season": _analysis_summary(rows),
+        "current_metrics": sorted(
+            (
+                _round_metric_record(metric)
+                for metric in rolling_raw.get("by_target", {}).get(str(current_season), {}).get("metrics", [])
+            ),
+            key=lambda metric: (metric["role"], metric["stat"]),
+        ),
+        "current_role_summary": role_summary,
+        "current_featured_misses": top_current,
+        "historical_featured_misses": top_historical,
+    }
+
+
 def build_meta(
     leaderboard_raw: dict[str, Any],
     backtest_raw: dict[str, Any],
@@ -370,6 +529,7 @@ def main() -> None:
 
     leaderboard_out = build_leaderboard(leaderboard_raw)
     backtest_out = build_backtest(backtest_raw, rolling_raw, args.target_season)
+    analysis_out = build_analysis(rolling_raw)
     meta_out = build_meta(
         leaderboard_raw,
         backtest_raw,
@@ -379,9 +539,10 @@ def main() -> None:
 
     write_json(out_dir / "leaderboard.json", leaderboard_out)
     write_json(out_dir / "backtest.json", backtest_out)
+    write_json(out_dir / "analysis.json", analysis_out)
     write_json(out_dir / "meta.json", meta_out)
 
-    total_bytes = sum((out_dir / name).stat().st_size for name in ("leaderboard.json", "backtest.json", "meta.json"))
+    total_bytes = sum((out_dir / name).stat().st_size for name in ("leaderboard.json", "backtest.json", "analysis.json", "meta.json"))
     n_batter = len(leaderboard_out["boards"].get("batter", []))
     n_pitcher = len(leaderboard_out["boards"].get("pitcher", []))
     n_woba_players = len(backtest_out["player_predictions"]["batter_woba"])
@@ -389,7 +550,8 @@ def main() -> None:
     print(
         f"[export_demo] wrote {out_dir} "
         f"({total_bytes:,} bytes total; leaderboard {n_batter}B/{n_pitcher}P rows; "
-        f"backtest players {n_woba_players} wOBA / {n_fip_players} FIP)"
+        f"backtest players {n_woba_players} wOBA / {n_fip_players} FIP; "
+        f"analysis rows {analysis_out['scope']['player_stat_rows']})"
     )
 
 

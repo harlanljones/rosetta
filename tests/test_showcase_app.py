@@ -69,3 +69,19 @@ def test_showcase_route_uses_showcase_template(monkeypatch) -> None:
     response = leaderboard_app.showcase(request)
     assert response["template"] == "showcase.html"
     assert response["context"]["data"]["error"].startswith("Showcase data")
+
+
+def test_analysis_requires_real_export(tmp_path: Path, monkeypatch) -> None:
+    bundle = tmp_path / "demo"
+    bundle.mkdir()
+    (bundle / "analysis.json").write_text(json.dumps({"data_mode": "synthetic"}))
+    monkeypatch.setattr(leaderboard_app, "SHOWCASE_BUNDLE", bundle)
+    result = leaderboard_app._load_analysis()
+    assert result == {"error": "Analysis data is not real-data-only; refusing to render numbers."}
+
+
+def test_analysis_template_has_human_readable_guardrails() -> None:
+    html = leaderboard_app.TEMPLATES.get_template("analysis.html").render(
+        data={"error": "Analysis data is not exported yet."}
+    )
+    assert "Analysis data is not exported yet." in html

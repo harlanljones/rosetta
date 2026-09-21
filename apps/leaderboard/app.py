@@ -70,6 +70,23 @@ def showcase(request: Request) -> HTMLResponse:
     return TEMPLATES.TemplateResponse(request, "showcase.html", {"data": data})
 
 
+def _load_analysis() -> dict:
+    """Load the player-error report and keep synthetic bundles out of the UI."""
+    path = SHOWCASE_BUNDLE / "analysis.json"
+    if not path.exists():
+        return {"error": "Analysis data is not exported yet. Run `python scripts/export_demo.py`."}
+    payload = json.loads(path.read_text())
+    if payload.get("data_mode") != "real":
+        return {"error": "Analysis data is not real-data-only; refusing to render numbers."}
+    return payload
+
+
+@app.get("/analysis", response_class=HTMLResponse)
+def analysis(request: Request) -> HTMLResponse:
+    """Render the human-readable player-error and calibration report."""
+    return TEMPLATES.TemplateResponse(request, "analysis.html", {"data": _load_analysis()})
+
+
 @app.get("/health")
 def health() -> dict:
     return {"ok": True, "leaderboard_exists": OUTPUT.exists()}
