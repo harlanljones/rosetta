@@ -86,37 +86,76 @@ class NPBSession:
 
 
 def _clean(cell: str) -> str:
-    return re.sub(r"<[^>]+>", "", cell).replace("&nbsp;", " ").strip()
+    text = re.sub(r"<[^>]+>", "", cell).replace("&nbsp;", " ")
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def parse_table(html: str) -> tuple[list[str], list[dict]]:
     """Parse an NPB stat table -> (headers, rows with player_name/team/values)."""
     tables = re.findall(r"<table[^>]*>.*?</table>", html, re.S)
-    table = next((t for t in tables if 'class="ststats"' in t), None)
+    # The legacy page puts the marker on the table rows; the 2026 redesign
+    # adds a <thead> but keeps the marker on the rows. Select on the row
+    # marker so unrelated page tables cannot be mistaken for a stat table.
+    row_pattern = r'<tr\b[^>]*class=["\'][^"\']*\bststats\b[^"\']*["\'][^>]*>'
+    table = next((t for t in tables if re.search(row_pattern, t, re.I)), None)
     if not table:
         return [], []
-    header_row = re.search(r"<tr><th.*?</tr>", table, re.S)
+    header_row = next(
+        (m.group(0) for m in re.finditer(r"<tr\b[^>]*>.*?</tr>", table, re.S | re.I) if "<th" in m.group(0)),
+        None,
+    )
     if not header_row:
         return [], []
-    headers = [_clean(t) for t in re.findall(r"<th[^>]*>(.*?)</th>", header_row.group(0), re.S)]
+    headers = [_clean(t) for t in re.findall(r"<th[^>]*>(.*?)</th>", header_row, re.S)]
     # The Player column header has colspan=2 on some pages (name + team cells),
     # leaving headers one short of row cells — reinsert the Team label.
-    first_row = re.search(r'<tr class="ststats">.*?</tr>', table, re.S)
+    first_row = re.search(row_pattern + r".*?</tr>", table, re.S | re.I)
     if first_row:
         n_cells = len(re.findall(r"<td[^>]*>", first_row.group(0)))
         if n_cells == len(headers) + 1 and "Team" not in headers:
             headers = headers[:2] + ["Team"] + headers[2:]
     rows: list[dict] = []
-    for tr in re.findall(r'<tr class="ststats">.*?</tr>', table, re.S):
-        cells = re.findall(r"<td[^>]*>(.*?)</td>", tr, re.S)
+    for tr in re.findall(row_pattern + r".*?</tr>", table, re.S | re.I):
+        cells = re.findall(r"<td\b[^>]*>(.*?)</td>", tr, re.S | re.I)
         if len(cells) != len(headers):
             continue
-        name_m = re.search(r'<td class="stplayer">(.*?)</td>', tr, re.S)
-        team_m = re.search(r'<td class="stteam">(.*?)</td>', tr, re.S)
+        name_m = re.search(
+            r'<td\b[^>]*class=["\'][^"\']*\bstplayer\b[^"\']*["\'][^>]*>(.*?)</td>',
+            tr,
+            re.S | re.I,
+        )
+        team_m = re.search(
+            r'<td\b[^>]*class=["\'][^"\']*\bstteam\b[^"\']*["\'][^>]*>(.*?)</td>',
+            tr,
+            re.S | re.I,
+        )
+        if name_m is None:
+            # Redesign: name and team share one cell —
+            # 'Sato, Teruaki<span class="stteam">(T)</span>'.
+            combo_m = re.search(r"<td\b[^>]*>(.*?)</td>", tr, re.S | re.I)
+            combo = combo_m.group(1) if combo_m else ""
+            span_m = re.search(
+                r'<span\b[^>]*class=["\'][^"\']*\bstteam\b[^"\']*["\'][^>]*>\s*\((.*?)\)\s*</span>',
+                combo,
+                re.S | re.I,
+            )
+            name_raw = re.sub(r"<span\b.*?</span>", "", combo, flags=re.S | re.I)
+            name, team = _clean(name_raw), span_m.group(1).strip() if span_m else ""
+        else:
+            name_raw = name_m.group(1)
+            embedded_team = re.search(
+                r'<span\b[^>]*class=["\'][^"\']*\bstteam\b[^"\']*["\'][^>]*>\s*\((.*?)\)\s*</span>',
+                name_raw,
+                re.S | re.I,
+            )
+            name = _clean(re.sub(r"<span\b.*?</span>", "", name_raw, flags=re.S | re.I))
+            team = _clean(team_m.group(1)).strip("()") if team_m else ""
+            if not team and embedded_team:
+                team = embedded_team.group(1).strip()
         rows.append(
             {
-                "player_name": _clean(name_m.group(1)) if name_m else "",
-                "team": _clean(team_m.group(1)).strip("()") if team_m else "",
+                "player_name": name,
+                "team": team,
                 "values": [_clean(c) for c in cells],
             }
         )

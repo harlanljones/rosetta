@@ -36,6 +36,18 @@ def test_parse_pitching_table() -> None:
     assert len(rows) > 0
 
 
+def test_parse_redesigned_table_with_embedded_team() -> None:
+    html = """
+    <table class='leaderboard'><thead><tr><th>Rk</th><th>Player</th><th>AVG</th></tr></thead>
+      <tbody><tr class='ststats'><td>1</td><td class='stplayer'>Sato, Teruaki
+        <span class='stteam'>(T)</span></td><td>.314</td></tr></tbody>
+    </table>
+    """
+    headers, rows = parse_table(html)
+    assert headers == ["Rk", "Player", "AVG"]
+    assert rows == [{"player_name": "Sato, Teruaki", "team": "T", "values": ["1", "Sato, Teruaki (T)", ".314"]}]
+
+
 def test_parse_id_index() -> None:
     from rosetta.ingest.npb import parse_id_index
 
