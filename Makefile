@@ -1,4 +1,4 @@
-.PHONY: install install-dev test lint backtest historical-backtest historical-rolling leaderboard factors snapshots live-data clean
+.PHONY: install install-dev test lint backtest historical-backtest historical-rolling leaderboard showcase-data serve-leaderboard factors snapshots live-data clean
 
 PYTHON ?= python3
 PIP ?= $(PYTHON) -m pip
@@ -39,13 +39,13 @@ backtest:
 	@echo "Backtest written to data/outputs/backtest.json"
 
 historical-backtest:
-	@mkdir -p data/outputs/historical-backtest
-	rosetta historical-backtest --snapshots data/snapshots --target-season 2025 --out-dir data/outputs/historical-backtest
-	@echo "Historical report at data/outputs/historical-backtest/"
+	@mkdir -p data/outputs/historical-backtest-2026
+	rosetta historical-backtest --snapshots data/snapshots --target-season 2026 --out-dir data/outputs/historical-backtest-2026
+	@echo "Historical report at data/outputs/historical-backtest-2026/"
 
 historical-rolling:
 	@mkdir -p data/outputs/historical-rolling
-	rosetta historical-rolling --snapshots data/snapshots --target-seasons 2022,2023,2024,2025 --out-dir data/outputs/historical-rolling
+	rosetta historical-rolling --snapshots data/snapshots --target-seasons 2022,2023,2024,2025,2026 --out-dir data/outputs/historical-rolling
 	@echo "Historical rolling report at data/outputs/historical-rolling/"
 
 leaderboard:
@@ -54,6 +54,10 @@ leaderboard:
 	rosetta leaderboard --snapshots data/snapshots --factors data/outputs/factors.json --out data/outputs/leaderboard.json
 	@echo "Leaderboard JSON at data/outputs/leaderboard.json"
 	@echo "Run: make serve-leaderboard"
+
+showcase-data:
+	python3 scripts/export_demo.py --target-season 2026 --out data/outputs/demo
+	@echo "Showcase bundle written to data/outputs/demo/"
 
 serve-leaderboard: leaderboard
 	PYTHONPATH=. $(PYTHON) -m uvicorn apps.leaderboard.app:app --reload --port 8000

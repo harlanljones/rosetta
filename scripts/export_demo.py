@@ -1,7 +1,7 @@
 """Export a compact, deterministic JSON snapshot for the static portfolio demo.
 
 Reads already-generated artifacts (``data/outputs/leaderboard.json``,
-``data/outputs/historical-backtest/historical-backtest.json``,
+``data/outputs/historical-backtest-{target}/historical-backtest.json``,
 ``data/outputs/historical-rolling/historical-rolling.json``) and writes a
 small, self-describing bundle (``meta.json``, ``leaderboard.json``,
 ``backtest.json``) intended to be copied verbatim into a separate static
@@ -27,16 +27,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 LEADERBOARD_PATH = ROOT / "data" / "outputs" / "leaderboard.json"
-BACKTEST_PATH = ROOT / "data" / "outputs" / "historical-backtest" / "historical-backtest.json"
 ROLLING_PATH = ROOT / "data" / "outputs" / "historical-rolling" / "historical-rolling.json"
-
-# (missing-file, make target) — regeneration is offline (fitted from
-# committed snapshot CSVs only), never a network fetch.
-REGEN_TARGETS: tuple[tuple[Path, str], ...] = (
-    (LEADERBOARD_PATH, "leaderboard"),
-    (BACKTEST_PATH, "historical-backtest"),
-    (ROLLING_PATH, "historical-rolling"),
-)
 
 # Rounding precision by field-name suffix/prefix, applied to every float in
 # the leaderboard/backtest payloads to keep output small and readable.
@@ -113,14 +104,19 @@ def sha256_of(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def ensure_artifacts_exist() -> None:
-    missing = [(p, t) for p, t in REGEN_TARGETS if not p.exists()]
+def ensure_artifacts_exist(backtest_path: Path) -> None:
+    regen_targets = (
+        (LEADERBOARD_PATH, "leaderboard"),
+        (backtest_path, "historical-backtest"),
+        (ROLLING_PATH, "historical-rolling"),
+    )
+    missing = [(p, t) for p, t in regen_targets if not p.exists()]
     if not missing:
         return
     for path, target in missing:
         print(f"[export_demo] {path} missing, running `make {target}` (offline)", file=sys.stderr)
         subprocess.run(["make", target], cwd=ROOT, check=True)
-    still_missing = [str(p) for p, _ in REGEN_TARGETS if not p.exists()]
+    still_missing = [str(p) for p, _ in regen_targets if not p.exists()]
     if still_missing:
         raise SystemExit(f"Required artifacts still missing after regeneration: {still_missing}")
 
@@ -222,18 +218,20 @@ def build_leaderboard(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_backtest(backtest_raw: dict[str, Any], rolling_raw: dict[str, Any]) -> dict[str, Any]:
+def build_backtest(
+    backtest_raw: dict[str, Any], rolling_raw: dict[str, Any], target_season: int
+) -> dict[str, Any]:
     metadata = backtest_raw.get("metadata", {})
     if metadata.get("data_mode") != "real":
         raise SystemExit("Refusing to export backtest: metadata.data_mode is not 'real'.")
 
-    metrics_2025 = sorted(
+    metrics = sorted(
         (_round_metric_record(m) for m in backtest_raw.get("metrics", [])),
         key=lambda m: (m["role"], m["stat"]),
     )
-    if len(metrics_2025) != 11:
+    if len(metrics) != 11:
         raise SystemExit(
-            f"Expected 11 role/stat metric rows for the 2025 backtest, found {len(metrics_2025)}."
+            f"Expected 11 role/stat metric rows for the {target_season} backtest, found {len(metrics)}."
         )
 
     rolling_summary = sorted(
@@ -278,10 +276,10 @@ def build_backtest(backtest_raw: dict[str, Any], rolling_raw: dict[str, Any]) ->
         player_rows[key] = sorted(player_rows[key], key=lambda r: (r["player_name"], r["player_id"]))
 
     return {
-        "target_season_2025": {
-            "metrics": metrics_2025,
+        f"target_season_{target_season}": {
+            "metrics": metrics,
         },
-        "rolling_2022_2025": {
+        f"rolling_2022_{target_season}": {
             "target_seasons": sorted(rolling_raw.get("metadata", {}).get("target_seasons", [])),
             "summary_by_season": rolling_summary,
             "pooled": rolling_pooled,
@@ -347,6 +345,12 @@ def write_json(path: Path, payload: Any) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--target-season",
+        type=int,
+        default=2026,
+        help="Target season represented by the historical backtest (default: 2026).",
+    )
+    parser.add_argument(
         "--out",
         type=Path,
         default=ROOT / "data" / "outputs" / "demo",
@@ -354,22 +358,23 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    ensure_artifacts_exist()
+    backtest_path = ROOT / "data" / "outputs" / f"historical-backtest-{args.target_season}" / "historical-backtest.json"
+    ensure_artifacts_exist(backtest_path)
 
     leaderboard_raw = load_json(LEADERBOARD_PATH)
-    backtest_raw = load_json(BACKTEST_PATH)
+    backtest_raw = load_json(backtest_path)
     rolling_raw = load_json(ROLLING_PATH)
 
     out_dir: Path = args.out
     out_dir.mkdir(parents=True, exist_ok=True)
 
     leaderboard_out = build_leaderboard(leaderboard_raw)
-    backtest_out = build_backtest(backtest_raw, rolling_raw)
+    backtest_out = build_backtest(backtest_raw, rolling_raw, args.target_season)
     meta_out = build_meta(
         leaderboard_raw,
         backtest_raw,
         rolling_raw,
-        (LEADERBOARD_PATH, BACKTEST_PATH, ROLLING_PATH),
+        (LEADERBOARD_PATH, backtest_path, ROLLING_PATH),
     )
 
     write_json(out_dir / "leaderboard.json", leaderboard_out)

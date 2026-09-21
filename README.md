@@ -36,6 +36,7 @@ make backtest      # fit factors + holdout → prints RMSE/coverage per stat
 make historical-backtest  # real adjacent-season AAA→MLB validation report
 make historical-rolling   # same, refit and scored independently per target season
 make leaderboard   # top 50 foreign players with MLB-equivalent lines
+make showcase-data # export the three-file, real-data-only portfolio bundle
 make serve-leaderboard  # http://127.0.0.1:8000
 ```
 
@@ -45,6 +46,36 @@ offline fixtures remain available for CI and can be included explicitly with
 
 The historical report is a retrospective rate-translation check for players with
 observed MLB playing time, not a promotion or playing-time forecast.
+
+### Portfolio showcase
+
+The FastAPI app serves the narrative proof page at
+[`/showcase`](http://127.0.0.1:8000/showcase). It reads only the static bundle
+under `data/outputs/demo/` — `meta.json`, `leaderboard.json`, and `backtest.json`
+— and refuses to render numbers unless the bundle declares `data_mode: "real"`.
+The page leads with the 2026 season-to-date backtest (2025 AAA inputs → 2026
+MLB outcomes), shows all 11 metric rows and the 2022–2026 rolling comparison,
+then links to the full leaderboard at `/`.
+
+Build or refresh the bundle with:
+
+```bash
+make historical-backtest
+make historical-rolling
+make showcase-data
+make serve-leaderboard
+```
+
+For another target season, use the export script directly:
+
+```bash
+python scripts/export_demo.py --target-season 2026 --out data/outputs/demo
+```
+
+The showcase is intentionally static at view time: it performs no network fetch
+and has no chart dependency. Its metadata includes the source checksums,
+generation timestamp, estimator, era floor, and git commit used to create the
+bundle.
 
 Offline reproduction against the committed real snapshots:
 
@@ -62,7 +93,7 @@ rosetta fetch-statsapi --seasons 2018,2019,2020,2021,2022,2023,2024,2025 --sport
 ```
 
 The report records its input checksums, cutoff, source counts, and limitations in
-`data/outputs/historical-backtest/`. The demonstrator covers the adjacent AAA→MLB
+`data/outputs/historical-backtest-2026/`. The demonstrator covers the adjacent AAA→MLB
 link only; normalized wOBA/FIP/HR/FB and inferred ages retain approximation caveats.
 
 Legacy `make backtest` output (fixture/transfer holdout illustration; not the
