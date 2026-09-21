@@ -59,5 +59,13 @@ def test_showcase_route_uses_showcase_template(monkeypatch) -> None:
             "server": ("test", 80),
         }
     )
+    captured: dict = {}
+
+    def fake_template_response(request, template: str, context: dict):
+        captured.update(request=request, template=template, context=context)
+        return captured
+
+    monkeypatch.setattr(leaderboard_app.TEMPLATES, "TemplateResponse", fake_template_response)
     response = leaderboard_app.showcase(request)
-    assert response.template.name == "showcase.html"
+    assert response["template"] == "showcase.html"
+    assert response["context"]["data"]["error"].startswith("Showcase data")
