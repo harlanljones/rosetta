@@ -97,6 +97,9 @@ def test_write_merges_with_synthetic(tmp_path: Path, monkeypatch) -> None:
         )
 
     monkeypatch.setattr(api, "fetch_league_season", fake_fetch)
+    # The writer's optional age backfill must remain offline-testable; without
+    # this mock it would make an incidental network request for the player pool.
+    monkeypatch.setattr(api, "fetch_sport_players", lambda season, sport_id: [])
     # Seed a synthetic snapshot to merge against
     from rosetta.ingest.generate_snapshots import build_snapshots
 

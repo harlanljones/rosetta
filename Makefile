@@ -1,4 +1,4 @@
-.PHONY: install install-dev test lint backtest leaderboard factors snapshots live-data clean
+.PHONY: install install-dev test lint backtest historical-backtest historical-rolling leaderboard factors snapshots live-data clean
 
 PYTHON ?= python3
 PIP ?= $(PYTHON) -m pip
@@ -37,6 +37,16 @@ backtest:
 	@test -f data/outputs/factors.json || $(MAKE) factors
 	rosetta backtest --snapshots data/snapshots --factors data/outputs/factors.json --out data/outputs/backtest.json
 	@echo "Backtest written to data/outputs/backtest.json"
+
+historical-backtest:
+	@mkdir -p data/outputs/historical-backtest
+	rosetta historical-backtest --snapshots data/snapshots --target-season 2025 --out-dir data/outputs/historical-backtest
+	@echo "Historical report at data/outputs/historical-backtest/"
+
+historical-rolling:
+	@mkdir -p data/outputs/historical-rolling
+	rosetta historical-rolling --snapshots data/snapshots --target-seasons 2022,2023,2024,2025 --out-dir data/outputs/historical-rolling
+	@echo "Historical rolling report at data/outputs/historical-rolling/"
 
 leaderboard:
 	@mkdir -p data/outputs

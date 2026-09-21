@@ -1,0 +1,392 @@
+"""Export a compact, deterministic JSON snapshot for the static portfolio demo.
+
+Reads already-generated artifacts (``data/outputs/leaderboard.json``,
+``data/outputs/historical-backtest/historical-backtest.json``,
+``data/outputs/historical-rolling/historical-rolling.json``) and writes a
+small, self-describing bundle (``meta.json``, ``leaderboard.json``,
+``backtest.json``) intended to be copied verbatim into a separate static
+site. This script never touches the network and never regenerates data with
+different parameters than what is already on disk — it only shells out to
+``make`` targets (offline) when an expected artifact is missing.
+
+The public leaderboard invariant from AGENTS.md applies here too: only real
+(non-synthetic) rows are exported, and the script fails loudly rather than
+silently falling back to synthetic fixtures.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import subprocess
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+LEADERBOARD_PATH = ROOT / "data" / "outputs" / "leaderboard.json"
+BACKTEST_PATH = ROOT / "data" / "outputs" / "historical-backtest" / "historical-backtest.json"
+ROLLING_PATH = ROOT / "data" / "outputs" / "historical-rolling" / "historical-rolling.json"
+
+# (missing-file, make target) — regeneration is offline (fitted from
+# committed snapshot CSVs only), never a network fetch.
+REGEN_TARGETS: tuple[tuple[Path, str], ...] = (
+    (LEADERBOARD_PATH, "leaderboard"),
+    (BACKTEST_PATH, "historical-backtest"),
+    (ROLLING_PATH, "historical-rolling"),
+)
+
+# Rounding precision by field-name suffix/prefix, applied to every float in
+# the leaderboard/backtest payloads to keep output small and readable.
+RATE_FIELDS = {
+    "woba",
+    "bb_pct",
+    "k_pct",
+    "iso",
+    "babip",
+    "hr_pct",
+    "hr_fb",
+    "mae",
+    "rmse",
+    "baseline_mae",
+    "baseline_rmse",
+    "coverage_80",
+}
+ERA_LIKE_FIELDS = {"era", "fip"}
+
+
+def _round_value(key: str, value: Any) -> Any:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return value
+    base_key = key
+    for prefix in ("mle_", "_low", "_high"):
+        base_key = base_key.replace(prefix, "")
+    if base_key in ERA_LIKE_FIELDS or key.startswith(("era", "fip")) or "era" in key or "fip" in key:
+        return round(float(value), 3)
+    if any(base_key == f or base_key.endswith(f) for f in RATE_FIELDS):
+        return round(float(value), 4)
+    if isinstance(value, float) and value.is_integer():
+        return value
+    if isinstance(value, float):
+        return round(value, 4)
+    return value
+
+
+def _round_record(record: dict[str, Any]) -> dict[str, Any]:
+    return {k: _round_value(k, v) for k, v in sorted(record.items())}
+
+
+def _round_metric_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Round a backtest/rolling metrics row using its own ``stat`` field.
+
+    Metric rows use generic field names (``mae``, ``rmse``, ...) that don't
+    encode the underlying stat the way leaderboard columns do (``mle_fip``),
+    so precision is chosen from ``record["stat"]`` instead of the key name.
+    """
+    is_era_like = record.get("stat") in ERA_LIKE_FIELDS
+    out: dict[str, Any] = {}
+    for key, value in sorted(record.items()):
+        if key in ("mae", "rmse", "baseline_mae", "baseline_rmse"):
+            out[key] = round(float(value), 3 if is_era_like else 4)
+        elif key == "coverage_80":
+            out[key] = round(float(value), 3)
+        else:
+            out[key] = value
+    return out
+
+
+def _round_player_row(row: dict[str, Any], precision: int) -> dict[str, Any]:
+    """Round a player-prediction row's numeric fields to a fixed precision."""
+    numeric_fields = {"prior_2024_aaa", "predicted", "actual", "lower", "upper", "absolute_error"}
+    out: dict[str, Any] = {}
+    for key, value in sorted(row.items()):
+        if key in numeric_fields and isinstance(value, (int, float)) and not isinstance(value, bool):
+            out[key] = round(float(value), precision)
+        else:
+            out[key] = value
+    return out
+
+
+def sha256_of(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def ensure_artifacts_exist() -> None:
+    missing = [(p, t) for p, t in REGEN_TARGETS if not p.exists()]
+    if not missing:
+        return
+    for path, target in missing:
+        print(f"[export_demo] {path} missing, running `make {target}` (offline)", file=sys.stderr)
+        subprocess.run(["make", target], cwd=ROOT, check=True)
+    still_missing = [str(p) for p, _ in REGEN_TARGETS if not p.exists()]
+    if still_missing:
+        raise SystemExit(f"Required artifacts still missing after regeneration: {still_missing}")
+
+
+def git_short_sha() -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text())
+
+
+def build_leaderboard(raw: dict[str, Any]) -> dict[str, Any]:
+    data_mode = raw.get("data_mode")
+    if data_mode != "real":
+        raise SystemExit(
+            f"Refusing to export leaderboard: data_mode={data_mode!r}, expected 'real'. "
+            "Never ship a synthetic-backed demo board."
+        )
+    boards_out: dict[str, list[dict[str, Any]]] = {}
+    kept_fields = (
+        "player_id",
+        "player_name",
+        "from_league",
+        "to_league",
+        "role",
+        "season",
+        "team",
+        "path",
+        "age",
+        "source",
+        "sample_pa",
+        "sample_ip",
+        "n_movers_path",
+        "notes",
+        "woba",
+        "woba_low",
+        "woba_high",
+        "fip",
+        "fip_low",
+        "fip_high",
+        "mle_bb_pct",
+        "mle_bb_pct_low",
+        "mle_bb_pct_high",
+        "mle_k_pct",
+        "mle_k_pct_low",
+        "mle_k_pct_high",
+        "mle_iso",
+        "mle_iso_low",
+        "mle_iso_high",
+        "mle_babip",
+        "mle_babip_low",
+        "mle_babip_high",
+        "mle_hr_pct",
+        "mle_hr_pct_low",
+        "mle_hr_pct_high",
+        "mle_hr_fb",
+        "mle_hr_fb_low",
+        "mle_hr_fb_high",
+        "mle_era",
+        "mle_era_low",
+        "mle_era_high",
+        "mle_fip",
+        "mle_fip_low",
+        "mle_fip_high",
+    )
+    zero_synthetic_checked = 0
+    for role, rows in sorted(raw.get("boards", {}).items()):
+        if not isinstance(rows, list):
+            continue
+        synthetic_rows = [r for r in rows if r.get("is_synthetic")]
+        if synthetic_rows:
+            raise SystemExit(
+                f"Refusing to export leaderboard: {len(synthetic_rows)} synthetic rows found "
+                f"in board {role!r}. Public/demo boards are real-data-only."
+            )
+        zero_synthetic_checked += len(rows)
+        trimmed = []
+        for row in rows:
+            trimmed_row = {k: row.get(k) for k in kept_fields if k in row}
+            trimmed.append(_round_record(trimmed_row))
+        # Stable ordering: role's natural sort order (already ranked), then
+        # break ties on player_id for determinism.
+        boards_out[role] = trimmed
+    if zero_synthetic_checked == 0:
+        raise SystemExit("Refusing to export leaderboard: zero rows found across all boards.")
+    return {
+        "season": raw.get("season"),
+        "data_mode": data_mode,
+        "source_counts": raw.get("source_counts", {}),
+        "boards": boards_out,
+    }
+
+
+def build_backtest(backtest_raw: dict[str, Any], rolling_raw: dict[str, Any]) -> dict[str, Any]:
+    metadata = backtest_raw.get("metadata", {})
+    if metadata.get("data_mode") != "real":
+        raise SystemExit("Refusing to export backtest: metadata.data_mode is not 'real'.")
+
+    metrics_2025 = sorted(
+        (_round_metric_record(m) for m in backtest_raw.get("metrics", [])),
+        key=lambda m: (m["role"], m["stat"]),
+    )
+    if len(metrics_2025) != 11:
+        raise SystemExit(
+            f"Expected 11 role/stat metric rows for the 2025 backtest, found {len(metrics_2025)}."
+        )
+
+    rolling_summary = sorted(
+        (_round_metric_record(m) for m in rolling_raw.get("summary", [])),
+        key=lambda m: (m["target_season"], m["role"], m["stat"]),
+    )
+    rolling_pooled = sorted(
+        (_round_metric_record(m) for m in rolling_raw.get("pooled", [])),
+        key=lambda m: (m["role"], m["stat"]),
+    )
+
+    detail = backtest_raw.get("detail", [])
+    player_rows: dict[str, list[dict[str, Any]]] = {"batter_woba": [], "pitcher_fip": []}
+    for row in detail:
+        stat = row.get("stat")
+        role = row.get("role")
+        key = None
+        if role == "batter" and stat == "woba":
+            key = "batter_woba"
+        elif role == "pitcher" and stat == "fip":
+            key = "pitcher_fip"
+        if key is None:
+            continue
+        precision = 3 if key == "pitcher_fip" else 4
+        player_rows[key].append(
+            _round_player_row(
+                {
+                    "player_id": row.get("player_id"),
+                    "player_name": row.get("player_name"),
+                    "prior_2024_aaa": row.get("prior"),
+                    "predicted": row.get("prediction"),
+                    "actual": row.get("actual"),
+                    "lower": row.get("lower"),
+                    "upper": row.get("upper"),
+                    "covered_80": row.get("covered_80"),
+                    "absolute_error": row.get("absolute_error"),
+                },
+                precision,
+            )
+        )
+    for key in player_rows:
+        player_rows[key] = sorted(player_rows[key], key=lambda r: (r["player_name"], r["player_id"]))
+
+    return {
+        "target_season_2025": {
+            "metrics": metrics_2025,
+        },
+        "rolling_2022_2025": {
+            "target_seasons": sorted(rolling_raw.get("metadata", {}).get("target_seasons", [])),
+            "summary_by_season": rolling_summary,
+            "pooled": rolling_pooled,
+        },
+        "player_predictions": player_rows,
+    }
+
+
+def build_meta(
+    leaderboard_raw: dict[str, Any],
+    backtest_raw: dict[str, Any],
+    rolling_raw: dict[str, Any],
+    input_paths: tuple[Path, ...],
+) -> dict[str, Any]:
+    bt_meta = backtest_raw.get("metadata", {})
+    roll_meta = rolling_raw.get("metadata", {})
+    params = bt_meta.get("parameters", {})
+
+    # Deterministic timestamp: derived from the source artifacts' own
+    # filesystem mtimes (max across inputs), never wall-clock "now". Given a
+    # fixed set of input files this is stable across repeated runs.
+    generated_at = datetime.fromtimestamp(
+        max(p.stat().st_mtime for p in input_paths), tz=UTC
+    ).isoformat()
+
+    checksums = dict(sorted(bt_meta.get("input_sha256", {}).items()))
+
+    limitations = [
+        "Evaluation is limited to players with observed MLB playing time above "
+        "threshold; this is not a promotion or playing-time model.",
+        "Only the real adjacent AAA-to-MLB link is backtested here; international "
+        "links (KBO/NPB/CPBL/Cuba) are shown on the leaderboard but not "
+        "held-out-validated against MLB outcomes in this demo.",
+        "No park, role, or target-season aging adjustment is applied.",
+        "An AAA era floor (2019+) excludes pre-livelier-ball AAA seasons from "
+        "training to avoid mixing run environments.",
+        "Bootstrap resamples rows, not player clusters; intervals are "
+        "approximate for players with few comparable transferred pairs.",
+        "This is a static, point-in-time export — not a live/hosted runtime.",
+    ]
+
+    return {
+        "data_mode": "real",
+        "generated_at": generated_at,
+        "rosetta_git_commit": git_short_sha(),
+        "estimator": params.get("estimator"),
+        "era_floor": params.get("era_floor"),
+        "source_counts": leaderboard_raw.get("source_counts", {}),
+        "backtest_source_season": bt_meta.get("source_season"),
+        "backtest_target_season": bt_meta.get("target_season"),
+        "backtest_training_cutoff": bt_meta.get("training_cutoff"),
+        "backtest_latest_training_to_season": bt_meta.get("latest_training_to_season"),
+        "rolling_target_seasons": sorted(roll_meta.get("target_seasons", [])),
+        "input_sha256": checksums,
+        "limitations": limitations,
+    }
+
+
+def write_json(path: Path, payload: Any) -> None:
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=ROOT / "data" / "outputs" / "demo",
+        help="Output directory for the exported demo bundle.",
+    )
+    args = parser.parse_args()
+
+    ensure_artifacts_exist()
+
+    leaderboard_raw = load_json(LEADERBOARD_PATH)
+    backtest_raw = load_json(BACKTEST_PATH)
+    rolling_raw = load_json(ROLLING_PATH)
+
+    out_dir: Path = args.out
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    leaderboard_out = build_leaderboard(leaderboard_raw)
+    backtest_out = build_backtest(backtest_raw, rolling_raw)
+    meta_out = build_meta(
+        leaderboard_raw,
+        backtest_raw,
+        rolling_raw,
+        (LEADERBOARD_PATH, BACKTEST_PATH, ROLLING_PATH),
+    )
+
+    write_json(out_dir / "leaderboard.json", leaderboard_out)
+    write_json(out_dir / "backtest.json", backtest_out)
+    write_json(out_dir / "meta.json", meta_out)
+
+    total_bytes = sum((out_dir / name).stat().st_size for name in ("leaderboard.json", "backtest.json", "meta.json"))
+    n_batter = len(leaderboard_out["boards"].get("batter", []))
+    n_pitcher = len(leaderboard_out["boards"].get("pitcher", []))
+    n_woba_players = len(backtest_out["player_predictions"]["batter_woba"])
+    n_fip_players = len(backtest_out["player_predictions"]["pitcher_fip"])
+    print(
+        f"[export_demo] wrote {out_dir} "
+        f"({total_bytes:,} bytes total; leaderboard {n_batter}B/{n_pitcher}P rows; "
+        f"backtest players {n_woba_players} wOBA / {n_fip_players} FIP)"
+    )
+
+
+if __name__ == "__main__":
+    main()

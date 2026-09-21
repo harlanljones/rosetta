@@ -1,12 +1,14 @@
 """League difficulty factors from the transferred-player cohort.
 
-Method (portfolio v1): age-adjusted rate ratios + sample-size shrinkage to 1.0
-+ bootstrap percentile intervals. Factors chain multiplicatively along
-CUBA → CPBL → KBO → NPB → AAA → MLB.
+Method (portfolio v1): age-adjusted ratio-of-means link factors (sum of
+weighted post-move rates over sum of weighted age-adjusted pre-move rates)
++ sample-size shrinkage to 1.0 + bootstrap percentile intervals. Factors
+chain multiplicatively along CUBA → CPBL → KBO → NPB → AAA → MLB.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +21,49 @@ from rosetta.schema import LEAGUE_CHAIN
 
 HITTER_STATS = ("bb_pct", "k_pct", "iso", "babip", "hr_pct", "woba")
 PITCHER_STATS = ("k_pct", "bb_pct", "hr_fb", "era", "fip")
+
+#: Domain-fixed era floor per league: seasons before this value are a
+#: different run environment and must not be pooled with later seasons when
+#: fitting transfer-cohort link factors. AAA adopted the MLB (livelier) ball
+#: starting in the 2019 season; AAA-2018-and-earlier rates were produced
+#: under a different, deader ball and are not comparable to 2019+ AAA or to
+#: MLB rates from any era. This is a fixed domain fact, not a tuned
+#: lookback window — do not adjust it to improve backtest metrics.
+LEAGUE_ERA_FLOOR: dict[str, int] = {"AAA": 2019}
+
+
+def apply_era_floor(
+    cohort: pd.DataFrame, era_floor: dict[str, int] | None = LEAGUE_ERA_FLOOR
+) -> pd.DataFrame:
+    """Drop cohort rows whose AAA endpoint predates the AAA ball-standardization floor.
+
+    A row is dropped when ``from_league`` is in ``era_floor`` and
+    ``from_season`` precedes the floor, or when ``to_league`` is in
+    ``era_floor`` and ``to_season`` precedes the floor. International links
+    (KBO/NPB/CPBL/CUBA) are unaffected unless one endpoint is a floored
+    league (currently only AAA).
+
+    ``era_floor=None`` disables filtering entirely (returns ``cohort``
+    unchanged). If the cohort lacks ``from_season``/``to_season`` columns,
+    the floor cannot be evaluated and the cohort is returned unchanged —
+    this keeps the helper safe to call on cohorts without season columns
+    (e.g. small unit-test fixtures) rather than raising.
+    """
+    if not era_floor:
+        return cohort
+    if "from_season" not in cohort.columns or "to_season" not in cohort.columns:
+        return cohort
+    if cohort.empty:
+        return cohort
+
+    from_season = pd.to_numeric(cohort["from_season"], errors="coerce")
+    to_season = pd.to_numeric(cohort["to_season"], errors="coerce")
+
+    drop = pd.Series(False, index=cohort.index)
+    for league, floor_season in era_floor.items():
+        drop |= (cohort["from_league"] == league) & (from_season < floor_season)
+        drop |= (cohort["to_league"] == league) & (to_season < floor_season)
+    return cohort.loc[~drop].copy()
 
 # Prior strength for shrinkage toward 1.0 (units of "pseudo-movers")
 DEFAULT_PRIOR_N = {
@@ -40,6 +85,16 @@ def _weight(role: str, row: pd.Series) -> float:
     return float(min(row["pre_ip"], row["post_ip"]))
 
 
+_ALLOWED_ESTIMATORS = ("mean_ratio", "ratio_of_means")
+
+
+def _validate_estimator(estimator: str) -> None:
+    if estimator not in _ALLOWED_ESTIMATORS:
+        raise ValueError(
+            f"unknown estimator {estimator!r}; expected one of {_ALLOWED_ESTIMATORS}"
+        )
+
+
 def estimate_link_factor(
     cohort: pd.DataFrame,
     *,
@@ -48,8 +103,22 @@ def estimate_link_factor(
     stat: str,
     role: str,
     prior_n: float,
+    estimator: str = "ratio_of_means",
 ) -> dict[str, float]:
-    """Weighted mean of age-adjusted post/pre ratios for one link+stat."""
+    """Estimate a shrunken link factor for one link+stat.
+
+    ``estimator="ratio_of_means"`` (default) computes
+    ``sum(weight * post) / sum(weight * pre_adj)`` over the cohort rows and
+    weights. Selected on 2022-2024 rolling backtest targets (won 33/33
+    target x stat MAE comparisons) and confirmed on the 2025 holdout
+    (better on all 11 stats).
+
+    ``estimator="mean_ratio"`` is the weighted mean of per-pair age-adjusted
+    post/pre ratios; retained for comparison only. It is Jensen-biased
+    upward and unstable (can blow up) when a player's pre-move rate is
+    near zero.
+    """
+    _validate_estimator(estimator)
     mask = (
         (cohort["from_league"] == from_league)
         & (cohort["to_league"] == to_league)
@@ -77,6 +146,8 @@ def estimate_link_factor(
 
     ratios = []
     weights = []
+    posts = []
+    pre_adjs = []
     for _, row in sub.iterrows():
         pre = float(row[pre_col])
         post = float(row[post_col])
@@ -85,14 +156,21 @@ def estimate_link_factor(
             continue
         ratios.append(post / pre_adj)
         weights.append(_weight(role, row))
+        posts.append(post)
+        pre_adjs.append(pre_adj)
 
     if not ratios:
         return {"factor": 1.0, "raw_factor": 1.0, "n": 0.0, "weight": 0.0, "shrink": 1.0}
 
     w = np.asarray(weights, dtype=float)
-    r = np.asarray(ratios, dtype=float)
-    raw = float(np.average(r, weights=w))
-    n_eff = float(len(r))
+    if estimator == "mean_ratio":
+        r = np.asarray(ratios, dtype=float)
+        raw = float(np.average(r, weights=w))
+    else:  # ratio_of_means
+        post_arr = np.asarray(posts, dtype=float)
+        pre_adj_arr = np.asarray(pre_adjs, dtype=float)
+        raw = float(np.sum(w * post_arr) / np.sum(w * pre_adj_arr))
+    n_eff = float(len(ratios))
     shrink = n_eff / (n_eff + prior_n)
     factor = 1.0 + shrink * (raw - 1.0)
     return {
@@ -146,8 +224,15 @@ def bootstrap_link_factor(
     prior_n: float,
     n_boot: int = 500,
     seed: int = 0,
+    estimator: str = "ratio_of_means",
 ) -> dict[str, float]:
-    """Bootstrap percentile interval for a shrunken link factor + residual sigma."""
+    """Bootstrap percentile interval for a shrunken link factor + residual sigma.
+
+    ``estimator`` defaults to "ratio_of_means" (see `estimate_link_factor`);
+    "mean_ratio" is retained for comparison but is Jensen-biased upward and
+    unstable for small pre-move rates.
+    """
+    _validate_estimator(estimator)
     base = estimate_link_factor(
         cohort,
         from_league=from_league,
@@ -155,6 +240,7 @@ def bootstrap_link_factor(
         stat=stat,
         role=role,
         prior_n=prior_n,
+        estimator=estimator,
     )
     resid = _link_residuals(
         cohort,
@@ -187,6 +273,7 @@ def bootstrap_link_factor(
             stat=stat,
             role=role,
             prior_n=prior_n,
+            estimator=estimator,
         )
         samples.append(est["factor"])
     low, high = np.quantile(samples, [0.10, 0.90])
@@ -307,14 +394,29 @@ def fit_factor_model(
     n_boot: int = 400,
     seed: int = 42,
     prior_n: dict[str, float] | None = None,
+    estimator: str = "ratio_of_means",
+    era_floor: dict[str, int] | None = LEAGUE_ERA_FLOOR,
 ) -> LeagueFactorModel:
-    """Estimate all observed directed links from the cohort."""
+    """Estimate all observed directed links from the cohort.
+
+    ``estimator`` defaults to "ratio_of_means" (see `estimate_link_factor`);
+    "mean_ratio" is retained for comparison but is Jensen-biased upward and
+    unstable for small pre-move rates.
+
+    ``era_floor`` defaults to `LEAGUE_ERA_FLOOR` and drops cohort rows with a
+    pre-2019 AAA endpoint before fitting (see `apply_era_floor`): AAA
+    switched to the MLB ball in 2019, so earlier AAA seasons are a different
+    run environment and would bias fitted factors. Pass ``None`` to disable.
+    """
+    _validate_estimator(estimator)
+    cohort = apply_era_floor(cohort, era_floor)
     priors = dict(DEFAULT_PRIOR_N if prior_n is None else prior_n)
     model = LeagueFactorModel(prior_n=priors, n_boot=n_boot, seed=seed)
 
     pairs = (
         cohort[["from_league", "to_league", "role"]]
         .drop_duplicates()
+        .sort_values(["from_league", "to_league", "role"])
         .itertuples(index=False, name=None)
     )
     for from_lg, to_lg, role in pairs:
@@ -322,6 +424,12 @@ def fit_factor_model(
         key = model.link_key(from_lg, to_lg)
         model.links.setdefault(role, {}).setdefault(key, {})
         for i, stat in enumerate(stats):
+            # Python's hash() is intentionally salted per process.  A model
+            # written with a seed based on it was therefore not reproducible
+            # across workers (or even two CLI invocations).  Derive a stable
+            # integer from the link identity instead.
+            identity = f"{from_lg}\x1f{to_lg}\x1f{role}\x1f{stat}".encode()
+            stable_offset = int.from_bytes(hashlib.sha256(identity).digest()[:8], "big") % 10000
             est = bootstrap_link_factor(
                 cohort,
                 from_league=from_lg,
@@ -330,7 +438,8 @@ def fit_factor_model(
                 role=role,
                 prior_n=priors.get(stat, 35.0),
                 n_boot=n_boot,
-                seed=seed + i * 17 + hash((from_lg, to_lg, role)) % 10000,
+                seed=seed + i * 17 + stable_offset,
+                estimator=estimator,
             )
             model.links[role][key][stat] = est
     return model

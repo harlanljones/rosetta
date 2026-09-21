@@ -22,6 +22,142 @@ app = typer.Typer(
 )
 
 
+@app.command("historical-backtest")
+def historical_backtest_cmd(
+    snapshots: Path = typer.Option(SNAPSHOT_DIR, help="Real normalized snapshot directory"),
+    target_season: int = typer.Option(2025, help="Completed MLB target season"),
+    boot: int = typer.Option(250, help="Bootstrap resamples per fitted factor"),
+    seed: int = typer.Option(42, help="Deterministic bootstrap seed"),
+    min_pa: float = typer.Option(80.0, help="Minimum source and target batter PA"),
+    min_ip: float = typer.Option(30.0, help="Minimum source and target pitcher IP"),
+    estimator: str = typer.Option("ratio_of_means", help="Link estimator: ratio_of_means (default) or mean_ratio"),
+    no_era_floor: bool = typer.Option(
+        False, "--no-era-floor", help="Disable the AAA 2019 ball-standardization era floor (comparison runs only)"
+    ),
+    out_dir: Path = typer.Option(OUTPUT_DIR / "historical-backtest", help="Artifact directory"),
+) -> None:
+    """Evaluate adjacent real AAA-to-MLB seasons and write a readable report."""
+    from rosetta.backtest.historical import run_historical_backtest
+    from rosetta.backtest.report import write_historical_report
+    from rosetta.models.factors import LEAGUE_ERA_FLOOR
+
+    try:
+        payload = run_historical_backtest(
+            snapshots,
+            target_season=target_season,
+            n_boot=boot,
+            seed=seed,
+            min_pa=min_pa,
+            min_ip=min_ip,
+            estimator=estimator,
+            era_floor=None if no_era_floor else LEAGUE_ERA_FLOOR,
+        )
+        paths = write_historical_report(payload, out_dir)
+    except (FileNotFoundError, ValueError, KeyError, RuntimeError) as exc:
+        rprint(f"[red]Historical backtest unavailable:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    metadata = payload.get("metadata", {})
+    counts = metadata.get("counts", {})
+    training_count = counts.get("training_pairs")
+    if training_count is None:
+        training_count = len(payload.get("training_pairs", []))
+    rprint(
+        f"[green]Historical backtest:[/green] target {metadata.get('target_season', target_season)}; "
+        f"training pairs {training_count}; "
+        f"scored detail rows {len(payload.get('detail', []))}"
+    )
+    headline = [row for row in payload.get("metrics", []) if str(row.get("stat", "")).lower() in {"woba", "fip"}]
+    if headline:
+        table = Table(title="Historical headline metrics")
+        for column in ("role", "stat", "n", "mae", "baseline_mae", "coverage_80"):
+            table.add_column(column)
+        for row in headline:
+            table.add_row(
+                str(row.get("role", "")), str(row.get("stat", "")), str(row.get("n", "")),
+                f"{float(row['mae']):.4f}", f"{float(row['baseline_mae']):.4f}",
+                f"{float(row['coverage_80']) * 100:.1f}%",
+            )
+        rprint(table)
+    for kind, path in paths.items():
+        rprint(f"  {kind}: {path}")
+
+
+@app.command("historical-rolling")
+def historical_rolling_cmd(
+    snapshots: Path = typer.Option(SNAPSHOT_DIR, help="Real normalized snapshot directory"),
+    target_seasons: str = typer.Option("2022,2023,2024,2025", help="Comma-separated target MLB seasons"),
+    boot: int = typer.Option(250, help="Bootstrap resamples per fitted factor"),
+    seed: int = typer.Option(42, help="Deterministic bootstrap seed"),
+    min_pa: float = typer.Option(80.0, help="Minimum source and target batter PA"),
+    min_ip: float = typer.Option(30.0, help="Minimum source and target pitcher IP"),
+    estimator: str = typer.Option("ratio_of_means", help="Link estimator: ratio_of_means (default) or mean_ratio"),
+    no_era_floor: bool = typer.Option(
+        False, "--no-era-floor", help="Disable the AAA 2019 ball-standardization era floor (comparison runs only)"
+    ),
+    out_dir: Path = typer.Option(OUTPUT_DIR / "historical-rolling", help="Artifact directory"),
+) -> None:
+    """Fit and score each target season independently (no 2025-only tuning)."""
+    from rosetta.backtest.historical import run_rolling_backtest
+    from rosetta.backtest.report import write_rolling_report
+    from rosetta.models.factors import LEAGUE_ERA_FLOOR
+
+    seasons = [int(part.strip()) for part in target_seasons.split(",") if part.strip()]
+    try:
+        payload = run_rolling_backtest(
+            snapshots,
+            target_seasons=seasons,
+            n_boot=boot,
+            seed=seed,
+            min_pa=min_pa,
+            min_ip=min_ip,
+            estimator=estimator,
+            era_floor=None if no_era_floor else LEAGUE_ERA_FLOOR,
+        )
+        paths = write_rolling_report(payload, out_dir)
+    except (FileNotFoundError, ValueError, KeyError, RuntimeError) as exc:
+        rprint(f"[red]Historical rolling backtest unavailable:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    metadata = payload.get("metadata", {})
+    skipped = metadata.get("skipped", [])
+    rprint(
+        f"[green]Historical rolling backtest:[/green] targets {metadata.get('target_seasons', seasons)}; "
+        f"estimator {metadata.get('parameters', {}).get('estimator', estimator)}"
+    )
+    if skipped:
+        for item in skipped:
+            rprint(f"  [yellow]skipped {item.get('target_season')}:[/yellow] {item.get('reason')}")
+
+    pooled = [row for row in payload.get("pooled", []) if str(row.get("stat", "")).lower() in {"woba", "fip"}]
+    if pooled:
+        table = Table(title="Pooled headline metrics")
+        for column in ("role", "stat", "n", "mae", "baseline_mae", "coverage_80"):
+            table.add_column(column)
+        for row in pooled:
+            table.add_row(
+                str(row.get("role", "")), str(row.get("stat", "")), str(row.get("n", "")),
+                f"{float(row['mae']):.4f}", f"{float(row['baseline_mae']):.4f}",
+                f"{float(row['coverage_80']) * 100:.1f}%",
+            )
+        rprint(table)
+
+    per_target = [row for row in payload.get("summary", []) if str(row.get("stat", "")).lower() in {"woba", "fip"}]
+    if per_target:
+        table = Table(title="Per-target MAE vs baseline (wOBA / FIP)")
+        for column in ("target_season", "role", "stat", "n", "mae", "baseline_mae"):
+            table.add_column(column)
+        for row in sorted(per_target, key=lambda r: (r.get("target_season", 0), str(r.get("role", "")), str(r.get("stat", "")))):
+            table.add_row(
+                str(row.get("target_season", "")), str(row.get("role", "")), str(row.get("stat", "")),
+                str(row.get("n", "")), f"{float(row['mae']):.4f}", f"{float(row['baseline_mae']):.4f}",
+            )
+        rprint(table)
+
+    for kind, path in paths.items():
+        rprint(f"  {kind}: {path}")
+
+
 @app.command("generate-snapshots")
 def generate_snapshots_cmd(seed: int = 42) -> None:
     """Write synthetic offline snapshots for CI/demo."""

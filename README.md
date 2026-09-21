@@ -4,18 +4,11 @@ Translate NPB, KBO, CPBL, Cuban, and minor-league performance into **MLB-equival
 
 ## Results
 
-| Metric | Value | Source |
-|--------|-------|--------|
-| AAA→MLB wOBA factor | **0.9615** | 67 synthetic movers |
-| Real-world AAA/MLB wOBA ratio | **0.9549** | 1,199 real AAA seasons + 1,203 real MLB (Stats API) |
-| wOBA translation RMSE | **0.015** | holdout 72 pairs |
-| 80% coverage (wOBA) | **84%** | calibration in spec range |
-| MLS-target wOBA RMSE | **0.016** | holdout 50 MLB-target pairs |
-| Chain links fitted | **7** | CUBA→CPBL→KBO→NPB→AAA→MLB |
-| Real transfer pairs discovered | **4** | via Chadwick register crosswalk |
-| Tests passing | **34** | ruff clean, no network needed |
-
-Synthetic fixtures are <1% off real AAA/MLB ratios. The full backtest reproduces in one command with offline snapshots, while the leaderboard can be refreshed with real player rows.
+Historical validation is intentionally generated from the current real snapshots rather
+than hard-coded here. See the checked-in [historical backtest results](docs/historical-backtest-results.md)
+for the latest concise readout, and the generated HTML/Markdown artifacts for complete
+player-level detail. Synthetic fixtures are for offline tests and demos only; they are
+not evidence of real-world performance.
 
 ## Method (v1)
 
@@ -40,6 +33,8 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev,web]"
 make live-data       # refresh real MLB/AAA + KBO rows, then rebuild leaderboard
 make backtest      # fit factors + holdout → prints RMSE/coverage per stat
+make historical-backtest  # real adjacent-season AAA→MLB validation report
+make historical-rolling   # same, refit and scored independently per target season
 make leaderboard   # top 50 foreign players with MLB-equivalent lines
 make serve-leaderboard  # http://127.0.0.1:8000
 ```
@@ -48,7 +43,30 @@ make serve-leaderboard  # http://127.0.0.1:8000
 offline fixtures remain available for CI and can be included explicitly with
 `rosetta leaderboard --include-synthetic`.
 
-Backtest output:
+The historical report is a retrospective rate-translation check for players with
+observed MLB playing time, not a promotion or playing-time forecast.
+
+Offline reproduction against the committed real snapshots:
+
+```bash
+source .venv/bin/activate
+make historical-backtest
+make historical-rolling
+```
+
+Optional refresh (network access; not required for the committed reproduction):
+
+```bash
+rosetta fetch-statsapi --seasons 2018,2019,2020,2021,2022,2023,2024,2025 --sport 11 --league-label AAA
+rosetta fetch-statsapi --seasons 2018,2019,2020,2021,2022,2023,2024,2025 --sport 1 --league-label MLB
+```
+
+The report records its input checksums, cutoff, source counts, and limitations in
+`data/outputs/historical-backtest/`. The demonstrator covers the adjacent AAA→MLB
+link only; normalized wOBA/FIP/HR/FB and inferred ages retain approximation caveats.
+
+Legacy `make backtest` output (fixture/transfer holdout illustration; not the
+real adjacent-season validation) looks like:
 
 ```
 ┏━━━━━━━━┳━━━━┳━━━━━━━━┳━━━━━━━━┳━━━━━━━━━┓
