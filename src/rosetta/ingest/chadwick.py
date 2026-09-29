@@ -6,6 +6,7 @@ local copy from data/snapshots/chadwick_people.csv.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -74,6 +75,151 @@ def match_name(register: pd.DataFrame, last: str, first: str | None = None) -> p
     return register.loc[q]
 
 
+_KBO_SURNAME_SWAPS: dict[str, tuple[str, ...]] = {
+    "kim": ("gim",),
+    "gim": ("kim",),
+    "park": ("bak",),
+    "bak": ("park",),
+    "choi": ("choe",),
+    "choe": ("choi",),
+    "jung": ("jeong",),
+    "jeong": ("jung",),
+    "lee": ("i", "yi"),
+    "i": ("lee",),
+    "yi": ("lee",),
+    "cho": ("jo",),
+    "jo": ("cho",),
+    "yoo": ("yu",),
+    "yu": ("yoo",),
+}
+
+
+def _normalize_kbo_name_token(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+
+def kbo_name_variants(last: str, given: str) -> set[str]:
+    """Romanized keys that may appear on KBO leaderboards (RR vs MR spellings)."""
+    last_n = _normalize_kbo_name_token(last)
+    given_n = _normalize_kbo_name_token(given)
+    if not last_n or not given_n:
+        return set()
+    last_forms = {last_n}
+    for alt in _KBO_SURNAME_SWAPS.get(last_n, ()):
+        last_forms.add(alt)
+    variants: set[str] = set()
+    for lf in last_forms:
+        variants.add(f"{lf}{given_n}")
+        variants.add(f"{given_n}{lf}")
+    return variants
+
+
+def _register_kbo_name_key(cross: dict[str, str], name_key: str, uid: str) -> None:
+    existing = cross.get(name_key)
+    if existing is None:
+        cross[name_key] = uid
+    elif existing != uid:
+        cross[name_key] = ""
+
+
+def load_kbo_id_map(path: Path | None = None) -> dict[str, str]:
+    """Load optional ``kbo_id_map.csv`` rows ``kbo_id,key_uuid`` or ``kbo_id,key_mlbam``."""
+    path = Path(path) if path else SNAPSHOT_DIR / "kbo_id_map.csv"
+    if not path.exists():
+        return {}
+    frame = pd.read_csv(path)
+    if frame.empty or "kbo_id" not in frame.columns:
+        return {}
+    out: dict[str, str] = {}
+    for _, row in frame.iterrows():
+        raw_id = str(row["kbo_id"]).strip()
+        if not raw_id:
+            continue
+        player_key = raw_id if raw_id.startswith("kbo-") else f"kbo-{raw_id}"
+        if "key_uuid" in frame.columns and pd.notna(row.get("key_uuid")):
+            out[player_key] = str(row["key_uuid"]).strip()
+        elif "key_mlbam" in frame.columns and pd.notna(row.get("key_mlbam")):
+            try:
+                mlb = str(int(float(row["key_mlbam"])))
+            except (ValueError, TypeError):
+                mlb = str(row["key_mlbam"]).strip()
+            out[player_key] = f"__mlbam__{mlb}"
+    return out
+
+
+def enrich_crosswalk_with_kbo(
+    crosswalk: dict[str, str],
+    register: pd.DataFrame,
+    *,
+    snapshot_dir: Path | None = None,
+) -> dict[str, str]:
+    """Add KBO player_id keys when Chadwick lacks ``key_kbo`` (not in public register)."""
+    cross = dict(crosswalk)
+    root = Path(snapshot_dir) if snapshot_dir else SNAPSHOT_DIR
+    id_map = load_kbo_id_map(root / "kbo_id_map.csv")
+    mlbam_to_uuid = {
+        f"mlbam-{str(int(float(row['key_mlbam'])))}": str(row["key_uuid"])
+        for _, row in register.iterrows()
+        if pd.notna(row.get("key_mlbam")) and pd.notna(row.get("key_uuid"))
+    }
+    for player_key, target in id_map.items():
+        if target.startswith("__mlbam__"):
+            uid = mlbam_to_uuid.get(f"mlbam-{target.removeprefix('__mlbam__')}")
+            if uid:
+                cross[player_key] = uid
+        elif target:
+            cross[player_key] = target
+
+    for _, row in register.iterrows():
+        uid = str(row.get("key_uuid", ""))
+        if not uid or pd.isna(row.get("key_mlbam")):
+            continue
+        last = str(row.get("name_last", "") or "").strip()
+        given = str(row.get("name_given", "") or "").strip()
+        if not last or not given:
+            continue
+        for variant in kbo_name_variants(last, given):
+            _register_kbo_name_key(cross, f"kbo-name-{variant}", uid)
+
+    # Birth-year + inferred age from KBO snapshots when ages are known.
+    try:
+        from rosetta.ingest.loaders import load_league_seasons
+
+        kbo = pd.concat(
+            [
+                load_league_seasons("KBO", role="batter", snapshot_dir=root),
+                load_league_seasons("KBO", role="pitcher", snapshot_dir=root),
+            ],
+            ignore_index=True,
+        )
+    except (FileNotFoundError, ValueError):
+        kbo = pd.DataFrame()
+    if not kbo.empty and "birth_year" in register.columns:
+        reg = register.dropna(subset=["birth_year"]).copy()
+        reg["birth_year"] = pd.to_numeric(reg["birth_year"], errors="coerce")
+        for _, line in kbo.drop_duplicates("player_id").iterrows():
+            pid = str(line["player_id"])
+            if cross.get(pid):
+                continue
+            age = float(line.get("age", 27) or 27)
+            season = int(line["season"])
+            if age == 27.0 and pid.startswith("kbo-name-"):  # default age placeholder
+                continue
+            by = int(season - age)
+            cands = reg.loc[reg["birth_year"] == by]
+            if cands.empty:
+                continue
+            name_norm = _normalize_kbo_name_token(str(line.get("player_name", "")))
+            for _, cand in cands.iterrows():
+                for variant in kbo_name_variants(str(cand["name_last"]), str(cand["name_given"])):
+                    if variant == name_norm:
+                        cross[pid] = str(cand["key_uuid"])
+                        break
+                if cross.get(pid):
+                    break
+    return cross
+
+
 def build_id_crosswalk(register: pd.DataFrame) -> dict[str, str]:
     """Build {prefixed_league_id → key_uuid} crosswalk.
 
@@ -121,7 +267,7 @@ def build_id_crosswalk(register: pd.DataFrame) -> dict[str, str]:
                 # Ambiguous full name — drop it rather than mis-link.
                 cross.pop(name_key, None)
                 cross[name_key] = ""  # tombstone: never link ambiguous names
-    return cross
+    return enrich_crosswalk_with_kbo(cross, register)
 
 
 def cross_reference_seasons(

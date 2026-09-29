@@ -59,6 +59,22 @@ def test_crosswalk_name_fallback() -> None:
     assert "npb-name-Maeda, Kenta" not in cw
 
 
+def test_kbo_name_romanization_variants() -> None:
+    register = pd.DataFrame(
+        {
+            "key_uuid": ["u-kim"],
+            "key_mlbam": [673490.0],
+            "key_npb": [None],
+            "name_last": ["Kim"],
+            "name_given": ["Ha-Seong"],
+            "birth_year": [1995.0],
+        }
+    )
+    cw = build_id_crosswalk(register)
+    assert cw["kbo-name-gimhaseong"] == "u-kim"
+    assert cw["kbo-name-kimhaseong"] == "u-kim"
+
+
 def test_crosswalk_name_fallback_ambiguous() -> None:
     register = pd.DataFrame(
         {
