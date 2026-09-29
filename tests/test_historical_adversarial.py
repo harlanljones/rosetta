@@ -364,7 +364,7 @@ def test_historical_output_reproducible_across_python_hash_seeds(tmp_path: Path)
 
 def test_insufficient_data_and_ambiguous_duplicate_are_actionable(tmp_path: Path) -> None:
     _write_fixture(tmp_path, with_training=False)
-    with pytest.raises(ValueError, match="insufficient real AAA-to-MLB training pairs"):
+    with pytest.raises(ValueError, match=r"insufficient real AAA->MLB training pairs"):
         _run(tmp_path)
 
     _write_fixture(tmp_path)

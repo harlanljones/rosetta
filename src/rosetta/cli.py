@@ -26,6 +26,8 @@ app = typer.Typer(
 def historical_backtest_cmd(
     snapshots: Path = typer.Option(SNAPSHOT_DIR, help="Real normalized snapshot directory"),
     target_season: int = typer.Option(2025, help="Completed MLB target season"),
+    from_league: str = typer.Option("AAA", help="Source league for adjacent-season pairs"),
+    to_league: str = typer.Option("MLB", help="Destination league for adjacent-season pairs"),
     boot: int = typer.Option(250, help="Bootstrap resamples per fitted factor"),
     seed: int = typer.Option(42, help="Deterministic bootstrap seed"),
     min_pa: float = typer.Option(80.0, help="Minimum source and target batter PA"),
@@ -45,6 +47,8 @@ def historical_backtest_cmd(
         payload = run_historical_backtest(
             snapshots,
             target_season=target_season,
+            from_league=from_league,
+            to_league=to_league,
             n_boot=boot,
             seed=seed,
             min_pa=min_pa,
@@ -176,6 +180,9 @@ def fit_factors(
     out: Path = typer.Option(OUTPUT_DIR / "factors.json", help="Output factors JSON"),
     boot: int = typer.Option(250, help="Bootstrap resamples per link"),
     chadwick: Path | None = typer.Option(None, help="Chadwick register for cross-ID linking"),
+    with_calibration: bool = typer.Option(
+        True, help="Fit leakage-safe prior_affine calibration for AAA→MLB production use"
+    ),
 ) -> None:
     """Estimate league-link factors from the transferred-player cohort."""
     ensure_data_dirs()
@@ -183,6 +190,10 @@ def fit_factors(
     # Fit on non-holdout only
     train = cohort[~cohort["holdout"].astype(bool)] if "holdout" in cohort.columns else cohort
     model = fit_factor_model(train, n_boot=boot)
+    if with_calibration:
+        from rosetta.backtest.calibration_production import fit_production_calibration
+
+        model.calibration = fit_production_calibration(snapshots, n_boot=boot)
     model.save(out)
     rprint(f"[green]Wrote factors[/green] → {out}")
     for role, links in model.links.items():
@@ -365,6 +376,20 @@ def fetch_kbo(
     rprint(f"[green]KBO snapshots →[/green] {root}")
 
 
+@app.command("fetch-cpbl")
+def fetch_cpbl(
+    seasons: str = typer.Option("2024", help="Comma-separated seasons, e.g. 2023,2024"),
+    snapshots: Path = typer.Option(SNAPSHOT_DIR),
+    delay: float = typer.Option(1.0, help="Seconds between requests"),
+) -> None:
+    """Fetch CPBL season lines via cpbl.com.tw into snapshots."""
+    from rosetta.ingest.cpbl import write_cpbl_snapshots
+
+    years = [int(s) for s in seasons.split(",") if s.strip()]
+    root = write_cpbl_snapshots(years, out_dir=snapshots, delay=delay)
+    rprint(f"[green]CPBL snapshots →[/green] {root}")
+
+
 @app.command("fetch-npb")
 def fetch_npb(
     seasons: str = typer.Option("2025", help="Comma-separated seasons, e.g. 2024,2025"),
@@ -405,6 +430,19 @@ def fetch_savant(
         delay=delay,
     )
     rprint(f"[green]Savant snapshots →[/green] {root}")
+
+
+@app.command("enrich-aaa-splits")
+def enrich_aaa_splits_cmd(
+    snapshots: Path = typer.Option(SNAPSHOT_DIR),
+    raw_dir: Path = typer.Option(OUTPUT_DIR.parent / "raw" / "savant", help="Dir with cached Savant minors CSVs"),
+    season: int = typer.Option(2024, help="Season label for Savant aggregates"),
+) -> None:
+    """Merge Savant home/road split columns into aaa_batters.csv."""
+    from rosetta.ingest.splits import enrich_aaa_batter_splits
+
+    updated = enrich_aaa_batter_splits(snapshot_dir=snapshots, raw_dir=raw_dir, season=season)
+    rprint(f"[green]Updated split columns for {updated} AAA batter rows[/green]")
 
 
 @app.command("derive-park-factors")

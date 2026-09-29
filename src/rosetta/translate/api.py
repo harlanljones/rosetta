@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from rosetta.ingest.loaders import load_all_seasons
+from rosetta.models.calibration import apply_affine_stat, calibration_applies
 from rosetta.models.factors import HITTER_STATS, PITCHER_STATS, LeagueFactorModel
 from rosetta.models.role import apply_role_shift, detect_role, role_shift
 from rosetta.schema import League, Role, TranslationResult
@@ -62,6 +63,17 @@ def translate_line(
         floor = 0.0 if stat not in {"era", "fip"} else 0.5
         lower[stat] = max(floor, center - half)
         upper[stat] = center + half
+
+    cal_fits = (model.calibration or {}).get("fits", {}) if model.calibration else {}
+    if cal_fits and calibration_applies(path, to_league):
+        for stat in list(rates):
+            key = f"{role}:{stat}"
+            correction = cal_fits.get(key)
+            if not correction:
+                continue
+            rates[stat], lower[stat], upper[stat] = apply_affine_stat(
+                stat, rates[stat], lower[stat], upper[stat], correction
+            )
 
     # Pitcher role adjustment (SP<->RP): applied after league translation so the
     # role module is part of the pipeline, not dead code. No shift when the

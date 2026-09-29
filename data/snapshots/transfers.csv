@@ -12072,3 +12072,11 @@ mlbam-672744,Alexander Canario,batter,MLB,NPB,2025,2026,25.0,27.0,True
 mlbam-666915,Bobby Dalbec,batter,MLB,NPB,2025,2026,30.0,27.0,True
 "npb-name-Imai, Tatsuya","Imai, Tatsuya",pitcher,NPB,AAA,2025,2026,27.0,28.0,True
 "npb-name-Imai, Tatsuya","Imai, Tatsuya",pitcher,NPB,MLB,2025,2026,27.0,28.0,True
+kbo-name-gimhaseong,gimhaseong,batter,AAA,MLB,2025,2026,30.0,31.0,True
+kbo-name-gimhyeseong,gimhyeseong,batter,AAA,MLB,2025,2026,26.0,27.0,True
+kbo-name-gimhyeseong,gimhyeseong,batter,KBO,AAA,2024,2025,27.0,26.0,False
+kbo-name-gimhaseong,gimhaseong,batter,KBO,MLB,2020,2021,27.0,26.0,False
+kbo-name-gimhyeseong,gimhyeseong,batter,KBO,MLB,2024,2025,27.0,26.0,False
+kbo-name-gimhaseong,gimhaseong,batter,MLB,AAA,2024,2025,29.0,30.0,False
+kbo-name-gimhaseong,gimhaseong,batter,MLB,AAA,2025,2026,30.0,31.0,True
+kbo-name-gimhyeseong,gimhyeseong,batter,MLB,AAA,2025,2026,26.0,27.0,True

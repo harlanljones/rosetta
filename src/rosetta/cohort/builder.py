@@ -13,10 +13,39 @@ from pathlib import Path
 import pandas as pd
 
 from rosetta.ingest.loaders import load_all_seasons, load_transfers
+from rosetta.models.park import neutralize
 from rosetta.paths import SNAPSHOT_DIR
 
 HITTER_STATS = ["bb_pct", "k_pct", "iso", "babip", "hr_pct", "woba", "pa"]
 PITCHER_STATS = ["k_pct", "bb_pct", "hr_fb", "era", "fip", "ip"]
+
+_RATE_STATS = ("woba", "bb_pct", "k_pct", "iso", "babip", "hr_pct")
+_ERA_STATS = ("era", "fip")
+
+
+def _park_neutralize_line(line: pd.Series, *, rate_stats: tuple[str, ...]) -> pd.Series:
+    """Neutralize rate stats when verifiable home/road splits exist."""
+    out = line.copy()
+    home_pa = float(out.get("home_pa", 0) or 0)
+    road_pa = float(out.get("road_pa", 0) or 0)
+    if home_pa + road_pa < 50:
+        return out
+    for stat in rate_stats:
+        home_col = f"home_{stat}"
+        road_col = f"road_{stat}"
+        if home_col not in out or road_col not in out:
+            continue
+        home_val = out.get(home_col)
+        road_val = out.get(road_col)
+        if pd.isna(home_val) or pd.isna(road_val) or float(home_val) == float(road_val):
+            continue
+        road = float(road_val)
+        if road <= 0:
+            continue
+        pf = float(home_val) / road
+        if stat in out and pd.notna(out[stat]):
+            out[stat] = neutralize(float(out[stat]), pf)
+    return out
 
 
 def _with_uuid_index(
@@ -92,6 +121,12 @@ def pair_seasons(
             continue
 
         stats = HITTER_STATS if role == "batter" else PITCHER_STATS
+        if role == "batter":
+            pre = _park_neutralize_line(pre, rate_stats=_RATE_STATS)
+            post = _park_neutralize_line(post, rate_stats=_RATE_STATS)
+        else:
+            pre = _park_neutralize_line(pre, rate_stats=_ERA_STATS)
+            post = _park_neutralize_line(post, rate_stats=_ERA_STATS)
         row = {
             "player_id": rec["player_id"],
             "player_name": rec["player_name"],

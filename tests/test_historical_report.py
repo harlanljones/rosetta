@@ -88,8 +88,15 @@ def test_historical_cli_passes_flags_and_writes_report(tmp_path: Path, monkeypat
     ])
     assert result.exit_code == 0, result.output
     assert observed == {
-        "snapshots": Path(tmp_path / "snapshots"), "target_season": 2026,
-        "n_boot": 7, "seed": 9, "min_pa": 12.0, "min_ip": 13.0, "estimator": "ratio_of_means",
+        "snapshots": Path(tmp_path / "snapshots"),
+        "target_season": 2026,
+        "from_league": "AAA",
+        "to_league": "MLB",
+        "n_boot": 7,
+        "seed": 9,
+        "min_pa": 12.0,
+        "min_ip": 13.0,
+        "estimator": "ratio_of_means",
         "era_floor": {"AAA": 2019},
     }
     assert "Historical backtest" in result.output
