@@ -16,6 +16,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from rosetta.ingest.chadwick import build_id_crosswalk, load_register
 from rosetta.ingest.loaders import load_all_seasons
 from rosetta.models.factors import (
     HITTER_STATS,
@@ -121,52 +122,76 @@ def _prepare(df: pd.DataFrame, *, league: str, target_season: int, role: str) ->
 
 
 def _pair_rows(
-    aaa: pd.DataFrame,
-    mlb: pd.DataFrame,
+    source: pd.DataFrame,
+    target: pd.DataFrame,
     *,
+    from_league: str,
+    to_league: str,
     target_season: int,
     min_pa: float,
     min_ip: float,
     role: str,
+    id_crosswalk: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Build all exact adjacent AAA(s-1)->MLB(s) pairs through target."""
-    if aaa.empty or mlb.empty:
+    """Build adjacent from_league(s-1)->to_league(s) pairs through target."""
+    if source.empty or target.empty:
         return [], 0
     stats = HITTER_STATS if role == "batter" else PITCHER_STATS
     sample = "pa" if role == "batter" else "ip"
     threshold = float(min_pa if role == "batter" else min_ip)
-    aaa_idx = aaa.set_index(["player_id", "season"])
-    mlb_idx = mlb.set_index(["player_id", "season"])
     rows: list[dict[str, Any]] = []
     candidates = 0
 
-    for (player_id, to_season), post in mlb_idx.iterrows():
+    def _index_by_uuid(df: pd.DataFrame) -> dict[tuple[str, int], pd.Series]:
+        out: dict[tuple[str, int], pd.Series] = {}
+        if not id_crosswalk:
+            return out
+        tmp = df.copy()
+        tmp["key_uuid"] = tmp["player_id"].map(id_crosswalk)
+        for _, row in tmp.dropna(subset=["key_uuid"]).iterrows():
+            uid = str(row["key_uuid"])
+            if not uid:
+                continue
+            out[(uid, int(row["season"]))] = row
+        return out
+
+    source_uuid_idx = _index_by_uuid(source)
+    source_idx = source.set_index(["player_id", "season"])
+    target_idx = target.set_index(["player_id", "season"])
+
+    for (player_id, to_season), post in target_idx.iterrows():
         from_season = int(to_season) - 1
         if int(to_season) > target_season:
             continue
         key = (player_id, from_season)
-        if key not in aaa_idx.index:
-            continue
-        pre = aaa_idx.loc[key]
+        pre = source_idx.loc[key] if key in source_idx.index else None
+        if pre is None and id_crosswalk:
+            uid = id_crosswalk.get(str(player_id))
+            if uid:
+                pre = source_uuid_idx.get((uid, from_season))
         # Duplicate keys were rejected above, but retain this guard for clear
         # errors if a caller supplies a non-standard DataFrame directly.
         if isinstance(pre, pd.DataFrame) or isinstance(post, pd.DataFrame):
-            raise ValueError(f"ambiguous AAA-to-MLB pair for {player_id} {from_season}->{to_season}")
+            raise ValueError(
+                f"ambiguous {from_league}-to-{to_league} pair for {player_id} {from_season}->{to_season}"
+            )
+        if pre is None:
+            continue
         candidates += 1
         pre_sample = pre.get(sample)
         post_sample = post.get(sample)
         if not _finite(pre_sample) or not _finite(post_sample):
             raise ValueError(
-                f"non-finite {sample} for {player_id} AAA {from_season} or MLB {to_season}"
+                f"non-finite {sample} for {player_id} {from_league} {from_season} or {to_league} {to_season}"
             )
         if float(pre_sample) < threshold or float(post_sample) < threshold:
             continue
 
         required = [
-            ("age", pre.get("age"), "AAA", from_season),
-            ("age", post.get("age"), "MLB", to_season),
-            *[(stat, pre.get(stat), "AAA", from_season) for stat in stats],
-            *[(stat, post.get(stat), "MLB", to_season) for stat in stats],
+            ("age", pre.get("age"), from_league, from_season),
+            ("age", post.get("age"), to_league, to_season),
+            *[(stat, pre.get(stat), from_league, from_season) for stat in stats],
+            *[(stat, post.get(stat), to_league, to_season) for stat in stats],
         ]
         bad = [f"{field} ({league} {season})" for field, value, league, season in required if not _finite(value)]
         if bad:
@@ -176,8 +201,8 @@ def _pair_rows(
             "player_id": str(player_id),
             "player_name": str(post.get("player_name", pre.get("player_name", player_id))),
             "role": role,
-            "from_league": "AAA",
-            "to_league": "MLB",
+            "from_league": from_league,
+            "to_league": to_league,
             "from_season": int(from_season),
             "to_season": int(to_season),
             "age_from": float(pre["age"]),
@@ -320,6 +345,8 @@ def run_historical_backtest(
     snapshot_dir: Path | str | None = None,
     *,
     target_season: int = 2025,
+    from_league: str = "AAA",
+    to_league: str = "MLB",
     n_boot: int = 250,
     seed: int = 42,
     min_pa: float = 80.0,
@@ -348,13 +375,21 @@ def run_historical_backtest(
     min_ip = float(min_ip)
     root = Path(snapshot_dir) if snapshot_dir is not None else SNAPSHOT_DIR
     source_season = target_season - 1
+    from_league = str(from_league).strip().upper()
+    to_league = str(to_league).strip().upper()
+    link_key = f"{from_league}->{to_league}"
+
+    crosswalk: dict[str, str] | None = None
+    chadwick_path = root / "chadwick_people.csv"
+    if chadwick_path.exists() and from_league != to_league:
+        crosswalk = build_id_crosswalk(load_register(chadwick_path))
 
     by_role: dict[str, dict[str, pd.DataFrame]] = {}
     checksums: dict[str, str] = {}
-    source_counts: dict[str, int] = {"AAA": 0, "MLB": 0}
+    source_counts: dict[str, int] = {from_league: 0, to_league: 0}
     for role in _ROLES:
         by_role[role] = {}
-        for league in _LEAGUES:
+        for league in (from_league, to_league):
             path = root / f"{league.lower()}_{role}s.csv"
             if path.exists():
                 checksums[path.name] = _sha256(path)
@@ -367,8 +402,15 @@ def run_historical_backtest(
     candidates = 0
     for role in _ROLES:
         rows, count = _pair_rows(
-            by_role[role]["AAA"], by_role[role]["MLB"], target_season=target_season,
-            min_pa=float(min_pa), min_ip=float(min_ip), role=role,
+            by_role[role][from_league],
+            by_role[role][to_league],
+            from_league=from_league,
+            to_league=to_league,
+            target_season=target_season,
+            min_pa=float(min_pa),
+            min_ip=float(min_ip),
+            role=role,
+            id_crosswalk=crosswalk,
         )
         all_rows.extend(rows)
         candidates += count
@@ -376,21 +418,25 @@ def run_historical_backtest(
     evaluation = [row for row in all_rows if row["from_season"] == source_season and row["to_season"] == target_season]
     if not training_all:
         raise ValueError(
-            f"insufficient real AAA-to-MLB training pairs before {target_season}; "
+            f"insufficient real {link_key} training pairs before {target_season}; "
             "need at least one adjacent pair with both playing-time thresholds met"
         )
     if not evaluation:
         raise ValueError(
-            f"insufficient real AAA-to-MLB evaluation pairs for {source_season}->{target_season}; "
+            f"insufficient real {link_key} evaluation pairs for {source_season}->{target_season}; "
             "need at least one adjacent pair with both playing-time thresholds met"
         )
 
     train_frame_all = _training_frame(training_all)
-    train_frame = apply_era_floor(train_frame_all, era_floor)
+    train_frame = (
+        apply_era_floor(train_frame_all, era_floor)
+        if from_league == "AAA" or to_league == "AAA"
+        else train_frame_all
+    )
     excluded_era_floor = len(training_all) - len(train_frame)
     if train_frame.empty:
         raise ValueError(
-            f"insufficient real AAA-to-MLB training pairs before {target_season} after the AAA "
+            f"insufficient real {link_key} training pairs before {target_season} after the AAA "
             f"era floor ({era_floor}) excluded {excluded_era_floor} pair(s); need at least one "
             "adjacent pair with both playing-time thresholds met and a post-floor AAA season"
         )
@@ -412,11 +458,11 @@ def run_historical_backtest(
     # have a real fitted count in the fresh model.
     for role in sorted({row["role"] for row in evaluation}):
         stats = HITTER_STATS if role == "batter" else PITCHER_STATS
-        node = model.links.get(role, {}).get("AAA->MLB", {})
+        node = model.links.get(role, {}).get(link_key, {})
         missing = [stat for stat in stats if float(node.get(stat, {}).get("n", 0.0)) <= 0]
         if missing:
             raise ValueError(
-                f"unfitted real factor(s) for {role} AAA->MLB: {', '.join(missing)}; "
+                f"unfitted real factor(s) for {role} {link_key}: {', '.join(missing)}; "
                 "all scored statistics require positive training counts"
             )
     for role, role_links in model.links.items():
@@ -433,12 +479,12 @@ def run_historical_backtest(
         stats = HITTER_STATS if row["role"] == "batter" else PITCHER_STATS
         pre = {
             "player_id": row["player_id"], "player_name": row["player_name"],
-            "season": row["from_season"], "league": "AAA", "role": row["role"],
+            "season": row["from_season"], "league": from_league, "role": row["role"],
             "age": row["age_from"], "pa": row["pre_sample"] if row["role"] == "batter" else 0.0,
             "ip": row["pre_sample"] if row["role"] == "pitcher" else 0.0,
         }
         pre.update({stat: row[f"pre_{stat}"] for stat in stats})
-        translated = translate_line(pre, model=model, from_league="AAA", to_league="MLB")
+        translated = translate_line(pre, model=model, from_league=from_league, to_league=to_league)
         for stat in stats:
             prediction = float(translated.rates[stat])
             actual = float(row[f"post_{stat}"])
@@ -452,7 +498,7 @@ def run_historical_backtest(
                 {
                     "player_id": row["player_id"], "player_name": row["player_name"],
                     "role": row["role"], "from_season": row["from_season"],
-                    "to_season": row["to_season"], "from_league": "AAA", "to_league": "MLB",
+                    "to_season": row["to_season"], "from_league": from_league, "to_league": to_league,
                     "pre_sample": row["pre_sample"], "post_sample": row["post_sample"],
                     "pre_source": row["pre_source"], "post_source": row["post_source"],
                     "stat": stat, "prior": row[f"pre_{stat}"], "prediction": prediction,
@@ -466,7 +512,7 @@ def run_historical_backtest(
         {
             "player_id": row["player_id"], "player_name": row["player_name"], "role": row["role"],
             "from_season": row["from_season"], "to_season": row["to_season"],
-            "from_league": "AAA", "to_league": "MLB", "pre_source": row["pre_source"],
+            "from_league": from_league, "to_league": to_league, "pre_source": row["pre_source"],
             "post_source": row["post_source"], "pre_sample": row["pre_sample"],
             "post_sample": row["post_sample"], "cutoff_compliant": bool(row["to_season"] < target_season),
         }
@@ -477,7 +523,7 @@ def run_historical_backtest(
         "Normalized wOBA retains upstream Stats API event-weight approximations (2024-scale 0.69 UBB, 0.72 HBP, 0.89/1.27/1.62/2.10 hit weights).",
         "Normalized FIP uses the upstream fixed 3.10 constant; HR/FB is approximated as HR/(HR + air outs) when batted-ball splits are unavailable.",
         "Ages are normalized snapshot ages (or upstream inferred/default ages); no park or pitcher-role adjustment is applied and no target-season tuning is performed.",
-        "Only the real adjacent AAA-to-MLB link is evaluated; international links are not validated here. A player may contribute to multiple pre-target training seasons and to the target holdout.",
+        f"Only the real adjacent {link_key} link is evaluated; other league links are not validated in this run. A player may contribute to multiple pre-target training seasons and to the target holdout.",
         "The source rate is translated as observed; no additional target-age projection is applied.",
         "Snapshots are retrospective inputs rather than archived as-of feeds, and bootstrap resamples rows rather than player clusters.",
         "An AAA era floor excludes training pairs with an AAA endpoint season before "
@@ -489,7 +535,12 @@ def run_historical_backtest(
         "may include pre-2019 AAA seasons from before AAA's 2019 ball standardization.",
     ]
     metadata = {
-        "data_mode": "real", "target_season": target_season, "source_season": source_season,
+        "data_mode": "real",
+        "target_season": target_season,
+        "source_season": source_season,
+        "from_league": from_league,
+        "to_league": to_league,
+        "link": link_key,
         "training_cutoff": {"destination_season_lt": target_season},
         "counts": {
             "real_lines": source_counts, "candidate_adjacent_pairs": candidates,

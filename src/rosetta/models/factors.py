@@ -290,6 +290,7 @@ class LeagueFactorModel:
     prior_n: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_PRIOR_N))
     n_boot: int = 500
     seed: int = 42
+    calibration: dict | None = None
 
     def link_key(self, a: str, b: str) -> str:
         return f"{a}->{b}"
@@ -360,13 +361,16 @@ class LeagueFactorModel:
         return [from_league, to_league]
 
     def to_dict(self) -> dict:
-        return {
+        payload = {
             "links": self.links,
             "chain": list(self.chain),
             "prior_n": self.prior_n,
             "n_boot": self.n_boot,
             "seed": self.seed,
         }
+        if self.calibration:
+            payload["calibration"] = self.calibration
+        return payload
 
     @classmethod
     def from_dict(cls, data: dict) -> LeagueFactorModel:
@@ -376,6 +380,7 @@ class LeagueFactorModel:
             prior_n=data.get("prior_n", dict(DEFAULT_PRIOR_N)),
             n_boot=int(data.get("n_boot", 500)),
             seed=int(data.get("seed", 42)),
+            calibration=data.get("calibration"),
         )
 
     def save(self, path: Path | str) -> None:
