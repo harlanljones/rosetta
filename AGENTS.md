@@ -91,3 +91,20 @@ Conventional Commits (`feat:`, `fix:`, `chore:`) — the repo's history uses
 
 Report against outcomes: test/lint green; leaderboard `data_mode: "real"`
 with nonzero `source_counts`; factors `links` populated with real n.
+
+## Cursor Cloud specific instructions
+
+- The environment install ensures `python3-venv`, creates `.venv`, and installs
+  `.[dev,web]` (same extras as CI). Activate it (`source .venv/bin/activate`)
+  before `make` or `rosetta`. The Makefile calls `python3` and `rosetta` from
+  `PATH`; without the venv those commands miss the installed package.
+- Offline checks that match CI: `make test`, `make lint`, and `make backtest`.
+  `make live-data` and `fetch-*` hit live sites and are not required to
+  exercise the committed snapshots.
+- `data/snapshots/chadwick_people.csv` is gitignored. Tests that need a
+  register write a fixture; do not download Chadwick during setup.
+- The leaderboard UI is http://127.0.0.1:8000 (`apps.leaderboard.app:app`).
+  `make serve-leaderboard` rebuilds `data/outputs/leaderboard.json` and refits
+  `data/outputs/factors.json` with `--boot 250` when that file is missing.
+  `/health` reports whether the JSON exists. `/showcase` and `/analysis` stay
+  on their empty states until `make showcase-data`.
