@@ -53,14 +53,15 @@ GitHub API) unless marked otherwise. No guessed URLs.
 
 **Also wired: NPB official (npb.jp BIS English)** — `src/rosetta/ingest/npb.py` + `rosetta fetch-npb` (2026-09-19). Per-season Central+Pacific leaderboards (`/bis/eng/{season}/stats/{bat,pit}_{c,p}.html`), 8-digit BIS ids from the 26 `players/active/index_{a..z}.html` pages — **same ID space as Chadwick `key_npb`, so `npb-{id}` joins the crosswalk directly** — birth years from player cards. Verified live on 2024+2025 (87 batter / 48 pitcher rows; first 12 real NPB↔AAA/MLB transfer pairs; pitchers translate via the NPB→AAA→MLB chain, n=114 movers). Caveats: qualified top rows only; ids resolve only for players on the *active* index (departed players fall back to `npb-name-{name}`); no GS, no home/road splits.
 
-**Cohort crosswalk findings (2026-09-19):**
-- The Chadwick register has **no `key_kbo` column** — KBO ids can never join the
-  crosswalk, and `kbo-name-*` fallbacks don't match (Hangul romanization differs
-  from Chadwick spellings). KBO→MLB pairs therefore remain blocked until a KBO
-  ID crosswalk source exists (BR/mykbostats are Cloudflare-banned from this
-  machine). `build_id_crosswalk` gained a name-based fallback for `npb-name-*`
-  ids instead: exact "Last, First" match against `name_last, name_given`, only
-  for register rows carrying `key_npb`, with ambiguous full names tombstoned.
+**Cohort crosswalk findings (updated 2026-09-29):**
+- The public Chadwick register shards still **omit `key_kbo`**, so `kbo-{id}` keys
+  do not map directly. `build_id_crosswalk` now adds **KBO romanization aliases**
+  (`kbo-name-{variant}`) for MLB register rows (e.g. `gimhaseong` ↔ Kim Ha-Seong),
+  optional `data/snapshots/kbo_id_map.csv`, and birth-year name matches when ages
+  are real. Re-run `rosetta generate-transfers` after refreshing snapshots.
+- `build_id_crosswalk` retains the **NPB `npb-name-*` fallback**: exact
+  "Last, First" match against `name_last, name_given` for register rows with
+  `key_npb`, with ambiguous full names tombstoned.
 - `build_cohort` now defaults the Chadwick register to
   `data/snapshots/chadwick_people.csv` (was `None` — the cross-namespace join
   was silently disabled in every CLI run; only leagues sharing the `mlbam-` id

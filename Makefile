@@ -30,6 +30,7 @@ live-data:
 
 factors:
 	@mkdir -p data/outputs
+	# After refreshing snapshots, delete data/outputs/factors.json or run make factors to refit.
 	rosetta fit-factors --snapshots data/snapshots --out data/outputs/factors.json --boot 250
 
 backtest:
