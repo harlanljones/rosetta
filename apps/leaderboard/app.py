@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -50,15 +52,70 @@ def api_leaderboard() -> JSONResponse:
     return JSONResponse(_load())
 
 
+@app.get("/api/leaderboard.csv")
+def api_leaderboard_csv() -> Response:
+    """Full-board CSV export: every row from both boards, tagged with its role."""
+    data = _load()
+    buffer = io.StringIO()
+    rows = data.get("boards", {})
+    all_rows = [row for role in ("batter", "pitcher") for row in rows.get(role, [])]
+    columns: list[str] = []
+    for row in all_rows:
+        for key in row:
+            if key not in columns:
+                columns.append(key)
+    fieldnames = ["role", *columns]
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for role in ("batter", "pitcher"):
+        for row in rows.get(role, []):
+            writer.writerow({"role": role, **row})
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=leaderboard.csv"},
+    )
+
+
+def _find_player(query: str) -> list[dict]:
+    """Case-insensitive substring search over both boards; rows tagged with role."""
+    needle = query.strip().lower()
+    if not needle:
+        return []
+    rows = _load().get("boards", {})
+    matches: list[dict] = []
+    for role in ("batter", "pitcher"):
+        for row in rows.get(role, []):
+            if needle in str(row.get("player_name", "")).lower():
+                matches.append({"role": role, **row})
+    return matches
+
+
+@app.get("/player", response_class=HTMLResponse)
+def player_lookup(request: Request, q: str = "") -> HTMLResponse:
+    """Per-player lookup view across both boards."""
+    query = q.strip()
+    matches = _find_player(query) if query else []
+    return TEMPLATES.TemplateResponse(
+        request,
+        "player.html",
+        {"query": query, "matches": matches, "searched": bool(query)},
+    )
+
+
 def _load_showcase() -> dict:
     """Load the three-file static showcase bundle without silently using synthetic data."""
     payload: dict = {}
     for name in ("meta", "leaderboard", "backtest"):
         path = SHOWCASE_BUNDLE / f"{name}.json"
         if not path.exists():
-            return {"error": "Showcase data is not exported yet. Run `python scripts/export_demo.py`."}
+            return {
+                "error": "Showcase data is not exported yet. Run `python scripts/export_demo.py`."
+            }
         payload[name] = json.loads(path.read_text())
-    if any(payload[name].get("data_mode") != "real" for name in ("meta", "leaderboard", "backtest")):
+    if any(
+        payload[name].get("data_mode") != "real" for name in ("meta", "leaderboard", "backtest")
+    ):
         return {"error": "Showcase data is not real-data-only; refusing to render numbers."}
     return payload
 

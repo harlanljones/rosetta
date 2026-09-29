@@ -65,6 +65,7 @@ def apply_era_floor(
         drop |= (cohort["to_league"] == league) & (to_season < floor_season)
     return cohort.loc[~drop].copy()
 
+
 # Prior strength for shrinkage toward 1.0 (units of "pseudo-movers")
 DEFAULT_PRIOR_N = {
     "bb_pct": 30.0,
@@ -85,14 +86,24 @@ def _weight(role: str, row: pd.Series) -> float:
     return float(min(row["pre_ip"], row["post_ip"]))
 
 
-_ALLOWED_ESTIMATORS = ("mean_ratio", "ratio_of_means")
+_ALLOWED_ESTIMATORS = ("mean_ratio", "ratio_of_means", "odds_ratio")
+
+#: Stats that are proportions in [0, 1] — the only domain where the
+#: odds-ratio estimator is meaningful (odds = p / (1 - p)).
+ODDS_RATIO_STATS = frozenset({"bb_pct", "k_pct", "iso", "babip", "hr_pct", "woba", "hr_fb"})
+
+#: Odds clipping epsilon: rates at 0 or 1 would give infinite odds.
+ODDS_EPS = 0.01
 
 
 def _validate_estimator(estimator: str) -> None:
     if estimator not in _ALLOWED_ESTIMATORS:
-        raise ValueError(
-            f"unknown estimator {estimator!r}; expected one of {_ALLOWED_ESTIMATORS}"
-        )
+        raise ValueError(f"unknown estimator {estimator!r}; expected one of {_ALLOWED_ESTIMATORS}")
+
+
+def _to_odds(p: float) -> float:
+    p = min(max(p, ODDS_EPS), 1.0 - ODDS_EPS)
+    return p / (1.0 - p)
 
 
 def estimate_link_factor(
@@ -117,8 +128,18 @@ def estimate_link_factor(
     post/pre ratios; retained for comparison only. It is Jensen-biased
     upward and unstable (can blow up) when a player's pre-move rate is
     near zero.
+
+    ``estimator="odds_ratio"`` is the weighted mean of per-pair *odds*
+    ratios, ``odds(post) / odds(age-adjusted pre)`` — the odds-space analog
+    of the classic odds-ratio league translation. It is only defined for
+    proportion stats (see ``ODDS_RATIO_STATS``); era/fip raise ValueError.
+    Rates are clipped to ``ODDS_EPS`` from 0/1 before the odds transform.
     """
     _validate_estimator(estimator)
+    if estimator == "odds_ratio" and stat not in ODDS_RATIO_STATS:
+        raise ValueError(
+            f"odds_ratio estimator requires a proportion stat (one of {sorted(ODDS_RATIO_STATS)}); got {stat!r}"
+        )
     mask = (
         (cohort["from_league"] == from_league)
         & (cohort["to_league"] == to_league)
@@ -151,10 +172,15 @@ def estimate_link_factor(
     for _, row in sub.iterrows():
         pre = float(row[pre_col])
         post = float(row[post_col])
-        pre_adj = age_adjust_rate(pre, stat, float(row["age_from"]), float(row["age_to"]), role=role)
+        pre_adj = age_adjust_rate(
+            pre, stat, float(row["age_from"]), float(row["age_to"]), role=role
+        )
         if pre_adj <= 1e-9:
             continue
-        ratios.append(post / pre_adj)
+        if estimator == "odds_ratio":
+            ratios.append(_to_odds(post) / _to_odds(pre_adj))
+        else:
+            ratios.append(post / pre_adj)
         weights.append(_weight(role, row))
         posts.append(post)
         pre_adjs.append(pre_adj)
@@ -163,7 +189,7 @@ def estimate_link_factor(
         return {"factor": 1.0, "raw_factor": 1.0, "n": 0.0, "weight": 0.0, "shrink": 1.0}
 
     w = np.asarray(weights, dtype=float)
-    if estimator == "mean_ratio":
+    if estimator in ("mean_ratio", "odds_ratio"):
         r = np.asarray(ratios, dtype=float)
         raw = float(np.average(r, weights=w))
     else:  # ratio_of_means
@@ -429,6 +455,13 @@ def fit_factor_model(
         key = model.link_key(from_lg, to_lg)
         model.links.setdefault(role, {}).setdefault(key, {})
         for i, stat in enumerate(stats):
+            # odds_ratio is only defined for proportion stats; era/fip fall back
+            # to ratio_of_means so a whole-model odds_ratio fit stays usable.
+            effective = (
+                "ratio_of_means"
+                if estimator == "odds_ratio" and stat not in ODDS_RATIO_STATS
+                else estimator
+            )
             # Python's hash() is intentionally salted per process.  A model
             # written with a seed based on it was therefore not reproducible
             # across workers (or even two CLI invocations).  Derive a stable
@@ -444,7 +477,7 @@ def fit_factor_model(
                 prior_n=priors.get(stat, 35.0),
                 n_boot=n_boot,
                 seed=seed + i * 17 + stable_offset,
-                estimator=estimator,
+                estimator=effective,
             )
             model.links[role][key][stat] = est
     return model

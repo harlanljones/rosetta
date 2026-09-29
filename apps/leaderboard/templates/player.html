@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Player lookup — Rosetta MLE Leaderboard</title>
+  <style>
+    :root {
+      --bg: #0b1220;
+      --card: #121a2b;
+      --text: #e8eefc;
+      --muted: #9aa8c7;
+      --accent: #6ea8fe;
+      --accent-soft: #b9d4ff;
+      --warn: #ffd166;
+      --border: #243049;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+      background: radial-gradient(1200px 600px at 10% -10%, #1a2744, var(--bg));
+      color: var(--text);
+      line-height: 1.45;
+    }
+    main { max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem 3rem; }
+    h1 { margin: 0 0 0.25rem; font-size: clamp(1.6rem, 4vw, 2.2rem); letter-spacing: -0.03em; }
+    .sub { color: var(--muted); }
+    .search { margin: 1.5rem 0; display: flex; gap: 0.75rem; }
+    input[type="search"] {
+      flex: 1; padding: 0.6rem 0.9rem; border-radius: 10px;
+      border: 1px solid var(--border); background: var(--card); color: var(--text);
+      font-size: 1rem;
+    }
+    button {
+      padding: 0.6rem 1.2rem; border-radius: 10px; border: 1px solid var(--accent);
+      background: var(--accent); color: #0b1220; font-weight: 700; cursor: pointer;
+    }
+    a { color: var(--accent-soft); }
+    table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+    th, td { padding: 0.55rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    .num { font-variant-numeric: tabular-nums; font-family: "IBM Plex Mono", ui-monospace, monospace; }
+    .league { color: var(--accent); font-weight: 600; }
+    .band { color: var(--muted); font-size: 0.8rem; }
+    .empty { color: var(--muted); padding: 1rem 0; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Player lookup</h1>
+    <p class="sub">Find a player across both MLE boards.</p>
+    <form class="search" method="get" action="/player">
+      <input type="search" name="q" value="{{ query }}" placeholder="Player name…" aria-label="Player name" autofocus />
+      <button type="submit">Search</button>
+    </form>
+    {% if searched %}
+      {% if matches %}
+        <table>
+          <thead>
+            <tr><th>Player</th><th>Role</th><th>Lg</th><th>MLE</th><th>80% band</th></tr>
+          </thead>
+          <tbody>
+            {% for m in matches %}
+            <tr>
+              <td>{{ m.player_name }}</td>
+              <td>{{ m.role }}</td>
+              <td class="league">{{ m.from_league }}</td>
+              {% if m.role == "batter" %}
+                <td class="num">{{ '%.3f'|format(m.woba or 0) }} wOBA</td>
+                <td class="num band">{{ '%.3f'|format(m.woba_low or 0) }}–{{ '%.3f'|format(m.woba_high or 0) }}</td>
+              {% else %}
+                <td class="num">{{ '%.2f'|format(m.fip or 0) }} FIP</td>
+                <td class="num band">{{ '%.2f'|format(m.fip_low or 0) }}–{{ '%.2f'|format(m.fip_high or 0) }}</td>
+              {% endif %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p class="empty">No matches for “{{ query }}”.</p>
+      {% endif %}
+    {% else %}
+      <p class="empty">Type a name above to search the current board.</p>
+    {% endif %}
+    <p><a href="/">← Back to the leaderboard</a></p>
+  </main>
+</body>
+</html>

@@ -32,9 +32,13 @@ def historical_backtest_cmd(
     seed: int = typer.Option(42, help="Deterministic bootstrap seed"),
     min_pa: float = typer.Option(80.0, help="Minimum source and target batter PA"),
     min_ip: float = typer.Option(30.0, help="Minimum source and target pitcher IP"),
-    estimator: str = typer.Option("ratio_of_means", help="Link estimator: ratio_of_means (default) or mean_ratio"),
+    estimator: str = typer.Option(
+        "ratio_of_means", help="Link estimator: ratio_of_means (default) or mean_ratio"
+    ),
     no_era_floor: bool = typer.Option(
-        False, "--no-era-floor", help="Disable the AAA 2019 ball-standardization era floor (comparison runs only)"
+        False,
+        "--no-era-floor",
+        help="Disable the AAA 2019 ball-standardization era floor (comparison runs only)",
     ),
     out_dir: Path = typer.Option(OUTPUT_DIR / "historical-backtest", help="Artifact directory"),
 ) -> None:
@@ -71,15 +75,22 @@ def historical_backtest_cmd(
         f"training pairs {training_count}; "
         f"scored detail rows {len(payload.get('detail', []))}"
     )
-    headline = [row for row in payload.get("metrics", []) if str(row.get("stat", "")).lower() in {"woba", "fip"}]
+    headline = [
+        row
+        for row in payload.get("metrics", [])
+        if str(row.get("stat", "")).lower() in {"woba", "fip"}
+    ]
     if headline:
         table = Table(title="Historical headline metrics")
         for column in ("role", "stat", "n", "mae", "baseline_mae", "coverage_80"):
             table.add_column(column)
         for row in headline:
             table.add_row(
-                str(row.get("role", "")), str(row.get("stat", "")), str(row.get("n", "")),
-                f"{float(row['mae']):.4f}", f"{float(row['baseline_mae']):.4f}",
+                str(row.get("role", "")),
+                str(row.get("stat", "")),
+                str(row.get("n", "")),
+                f"{float(row['mae']):.4f}",
+                f"{float(row['baseline_mae']):.4f}",
                 f"{float(row['coverage_80']) * 100:.1f}%",
             )
         rprint(table)
@@ -90,17 +101,23 @@ def historical_backtest_cmd(
 @app.command("historical-rolling")
 def historical_rolling_cmd(
     snapshots: Path = typer.Option(SNAPSHOT_DIR, help="Real normalized snapshot directory"),
-    target_seasons: str = typer.Option("2022,2023,2024,2025", help="Comma-separated target MLB seasons"),
+    target_seasons: str = typer.Option(
+        "2022,2023,2024,2025", help="Comma-separated target MLB seasons"
+    ),
     boot: int = typer.Option(250, help="Bootstrap resamples per fitted factor"),
     seed: int = typer.Option(42, help="Deterministic bootstrap seed"),
     min_pa: float = typer.Option(80.0, help="Minimum source and target batter PA"),
     min_ip: float = typer.Option(30.0, help="Minimum source and target pitcher IP"),
-    estimator: str = typer.Option("ratio_of_means", help="Link estimator: ratio_of_means (default) or mean_ratio"),
+    estimator: str = typer.Option(
+        "ratio_of_means", help="Link estimator: ratio_of_means (default) or mean_ratio"
+    ),
     calibration: str = typer.Option(
         "prior_affine", help="Rolling-only prior-fold calibration: prior_affine (default) or none"
     ),
     no_era_floor: bool = typer.Option(
-        False, "--no-era-floor", help="Disable the AAA 2019 ball-standardization era floor (comparison runs only)"
+        False,
+        "--no-era-floor",
+        help="Disable the AAA 2019 ball-standardization era floor (comparison runs only)",
     ),
     out_dir: Path = typer.Option(OUTPUT_DIR / "historical-rolling", help="Artifact directory"),
 ) -> None:
@@ -138,28 +155,50 @@ def historical_rolling_cmd(
         for item in skipped:
             rprint(f"  [yellow]skipped {item.get('target_season')}:[/yellow] {item.get('reason')}")
 
-    pooled = [row for row in payload.get("pooled", []) if str(row.get("stat", "")).lower() in {"woba", "fip"}]
+    pooled = [
+        row
+        for row in payload.get("pooled", [])
+        if str(row.get("stat", "")).lower() in {"woba", "fip"}
+    ]
     if pooled:
         table = Table(title="Pooled headline metrics")
         for column in ("role", "stat", "n", "mae", "baseline_mae", "coverage_80"):
             table.add_column(column)
         for row in pooled:
             table.add_row(
-                str(row.get("role", "")), str(row.get("stat", "")), str(row.get("n", "")),
-                f"{float(row['mae']):.4f}", f"{float(row['baseline_mae']):.4f}",
+                str(row.get("role", "")),
+                str(row.get("stat", "")),
+                str(row.get("n", "")),
+                f"{float(row['mae']):.4f}",
+                f"{float(row['baseline_mae']):.4f}",
                 f"{float(row['coverage_80']) * 100:.1f}%",
             )
         rprint(table)
 
-    per_target = [row for row in payload.get("summary", []) if str(row.get("stat", "")).lower() in {"woba", "fip"}]
+    per_target = [
+        row
+        for row in payload.get("summary", [])
+        if str(row.get("stat", "")).lower() in {"woba", "fip"}
+    ]
     if per_target:
         table = Table(title="Per-target MAE vs baseline (wOBA / FIP)")
         for column in ("target_season", "role", "stat", "n", "mae", "baseline_mae"):
             table.add_column(column)
-        for row in sorted(per_target, key=lambda r: (r.get("target_season", 0), str(r.get("role", "")), str(r.get("stat", "")))):
+        for row in sorted(
+            per_target,
+            key=lambda r: (
+                r.get("target_season", 0),
+                str(r.get("role", "")),
+                str(r.get("stat", "")),
+            ),
+        ):
             table.add_row(
-                str(row.get("target_season", "")), str(row.get("role", "")), str(row.get("stat", "")),
-                str(row.get("n", "")), f"{float(row['mae']):.4f}", f"{float(row['baseline_mae']):.4f}",
+                str(row.get("target_season", "")),
+                str(row.get("role", "")),
+                str(row.get("stat", "")),
+                str(row.get("n", "")),
+                f"{float(row['mae']):.4f}",
+                f"{float(row['baseline_mae']):.4f}",
             )
         rprint(table)
 
@@ -174,6 +213,35 @@ def generate_snapshots_cmd(seed: int = 42) -> None:
     rprint(f"[green]Snapshots written to[/green] {root}")
 
 
+def run_fit_factors(
+    snapshots: Path,
+    out: Path,
+    boot: int = 250,
+    chadwick: Path | None = None,
+    with_calibration: bool = True,
+    estimator: str = "ratio_of_means",
+) -> None:
+    """Estimate league-link factors from the transferred-player cohort.
+
+    Plain function so it can be called from other commands without typer's
+    default resolution (direct calls to a typer command would receive raw
+    OptionInfo objects).
+    """
+    ensure_data_dirs()
+    cohort = build_cohort(snapshots, chadwick_path=chadwick)
+    # Fit on non-holdout only
+    train = cohort[~cohort["holdout"].astype(bool)] if "holdout" in cohort.columns else cohort
+    model = fit_factor_model(train, n_boot=boot, estimator=estimator)
+    if with_calibration:
+        from rosetta.backtest.calibration_production import fit_production_calibration
+
+        model.calibration = fit_production_calibration(snapshots, n_boot=boot)
+    model.save(out)
+    rprint(f"[green]Wrote factors[/green] → {out}")
+    for role, links in model.links.items():
+        rprint(f"  {role}: {', '.join(links)}")
+
+
 @app.command("fit-factors")
 def fit_factors(
     snapshots: Path = typer.Option(SNAPSHOT_DIR, help="Snapshot directory"),
@@ -183,21 +251,19 @@ def fit_factors(
     with_calibration: bool = typer.Option(
         True, help="Fit leakage-safe prior_affine calibration for AAA→MLB production use"
     ),
+    estimator: str = typer.Option(
+        "ratio_of_means", help="Link estimator: ratio_of_means (default) | mean_ratio | odds_ratio"
+    ),
 ) -> None:
     """Estimate league-link factors from the transferred-player cohort."""
-    ensure_data_dirs()
-    cohort = build_cohort(snapshots, chadwick_path=chadwick)
-    # Fit on non-holdout only
-    train = cohort[~cohort["holdout"].astype(bool)] if "holdout" in cohort.columns else cohort
-    model = fit_factor_model(train, n_boot=boot)
-    if with_calibration:
-        from rosetta.backtest.calibration_production import fit_production_calibration
-
-        model.calibration = fit_production_calibration(snapshots, n_boot=boot)
-    model.save(out)
-    rprint(f"[green]Wrote factors[/green] → {out}")
-    for role, links in model.links.items():
-        rprint(f"  {role}: {', '.join(links)}")
+    run_fit_factors(
+        snapshots=snapshots,
+        out=out,
+        boot=boot,
+        chadwick=chadwick,
+        with_calibration=with_calibration,
+        estimator=estimator,
+    )
 
 
 @app.command("translate")
@@ -215,7 +281,7 @@ def translate_cmd(
     """Translate one player-season to MLB-equivalent rates."""
     if not factors.exists():
         rprint("[yellow]Factors missing — fitting now…[/yellow]")
-        fit_factors(snapshots=snapshots, out=factors)
+        run_fit_factors(snapshots=snapshots, out=factors)
     tr = translate(
         player,
         from_league,
@@ -239,7 +305,7 @@ def backtest_cmd(
     """Hold out recent transfers and score translations."""
     ensure_data_dirs()
     if not factors.exists():
-        fit_factors(snapshots=snapshots, out=factors, boot=boot, chadwick=chadwick)
+        run_fit_factors(snapshots=snapshots, out=factors, boot=boot, chadwick=chadwick)
     metrics = run_backtest(
         snapshots, factors_path=factors, n_boot=boot, out_path=out, chadwick_path=chadwick
     )
@@ -282,7 +348,7 @@ def leaderboard_cmd(
     """
     ensure_data_dirs()
     if not factors.exists():
-        fit_factors(snapshots=snapshots, out=factors)
+        run_fit_factors(snapshots=snapshots, out=factors)
     from rosetta.models.factors import LeagueFactorModel
 
     model = LeagueFactorModel.load(factors)
@@ -435,7 +501,9 @@ def fetch_savant(
 @app.command("enrich-aaa-splits")
 def enrich_aaa_splits_cmd(
     snapshots: Path = typer.Option(SNAPSHOT_DIR),
-    raw_dir: Path = typer.Option(OUTPUT_DIR.parent / "raw" / "savant", help="Dir with cached Savant minors CSVs"),
+    raw_dir: Path = typer.Option(
+        OUTPUT_DIR.parent / "raw" / "savant", help="Dir with cached Savant minors CSVs"
+    ),
     season: int = typer.Option(2024, help="Season label for Savant aggregates"),
 ) -> None:
     """Merge Savant home/road split columns into aaa_batters.csv."""
