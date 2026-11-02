@@ -57,6 +57,14 @@ def age_adjust_rate(
     age_from: float,
     age_to: float,
     role: str = "batter",
+    *,
+    skip: bool = False,
 ) -> float:
-    """Shift a pre-move rate forward to the post-move age before comparing."""
+    """Shift a pre-move rate forward to the post-move age before comparing.
+
+    ``skip=True`` returns the rate unchanged, for pairs where an endpoint age
+    is imputed and aging the rate would invent a curve that was never observed.
+    """
+    if skip:
+        return rate
     return rate + aging_multiplier(stat, age_from, age_to, role=role)

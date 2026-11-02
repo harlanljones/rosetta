@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from rosetta.ingest.npb import (
     fetch_birth_year,
@@ -11,6 +12,7 @@ from rosetta.ingest.npb import (
     normalize_hitting,
     normalize_pitching,
     parse_table,
+    stat_url,
 )
 
 FIX = Path(__file__).parent / "fixtures"
@@ -177,3 +179,73 @@ def test_snapshot_append_filters_synthetic(tmp_path: Path, monkeypatch) -> None:
     df = pd.read_csv(path)
     assert ((df["source"] == "npb-official") & (df["league"] == "NPB")).all()
     assert (df["is_synthetic"].astype(str) == "False").all()
+
+
+def test_normalize_age_source_birth_year_vs_imputed() -> None:
+    df = fetch_hitting(2026, session=_session(), id_map={"Kozono, Kaito": "81983888"})
+    out = normalize_hitting(df, 2026, birth_years={"81983888": 1990})
+    assert "age_source" in out.columns
+    known = out[out["player_id"] == "npb-81983888"]
+    assert len(known) > 0
+    assert (known["age_source"] == "birth_year").all()
+    assert (known["age"] == 36.0).all()
+    others = out[out["player_id"] != "npb-81983888"]
+    assert len(others) > 0
+    assert (others["age_source"] == "imputed").all()
+    assert (others["age"] == 27.0).all()
+
+
+def test_normalize_pitching_age_source() -> None:
+    raw = fetch_pitching(2026, session=_session(), id_map={"Saiki, Hiroto": "12345678"})
+    assert (raw["_npb_id"] == "12345678").any()
+    imputed = normalize_pitching(raw, 2026)
+    assert "age_source" in imputed.columns
+    assert (imputed["age_source"] == "imputed").all()
+    aged = normalize_pitching(raw, 2026, birth_years={"12345678": 1995})
+    saiki = aged[aged["player_id"] == "npb-12345678"]
+    assert len(saiki) > 0
+    assert (saiki["age_source"] == "birth_year").all()
+    assert (saiki["age"] == 31.0).all()
+
+
+def test_empty_frames_keep_age_source_column() -> None:
+    assert "age_source" in normalize_hitting(pd.DataFrame(), 2026).columns
+    assert "age_source" in normalize_pitching(pd.DataFrame(), 2026).columns
+
+
+def test_stat_page_without_table_raises_clear_error() -> None:
+    from rosetta.ingest.npb import NPBParseError, parse_stat_page
+
+    url = stat_url(2026, "bat_c")
+    with pytest.raises(NPBParseError, match="bat_c"):
+        parse_stat_page("<html><body>Service unavailable</body></html>", url)
+
+
+def test_stat_page_with_marker_but_no_header_raises() -> None:
+    from rosetta.ingest.npb import NPBParseError, parse_stat_page
+
+    html = "<table><tr class='ststats'><td>1</td><td>Sato, Teruaki</td></tr></table>"
+    with pytest.raises(NPBParseError):
+        parse_stat_page(html, stat_url(2026, "pit_c"))
+
+
+def test_stat_page_fixture_still_parses() -> None:
+    from rosetta.ingest.npb import parse_stat_page
+
+    headers, rows = parse_stat_page(_html("npb_bat_c.html"), stat_url(2026, "bat_c"))
+    assert len(rows) == 18
+    assert "PA" in headers
+
+
+def test_fetch_hitting_raises_instead_of_empty_frame_on_unparsed_page() -> None:
+    from rosetta.ingest import npb
+    from rosetta.ingest.npb import NPBParseError
+
+    sess = _StaticSession(
+        {
+            npb.stat_url(2026, "bat_c"): "<html>moved</html>",
+            npb.stat_url(2026, "bat_p"): _html("npb_bat_c.html"),
+        }
+    )
+    with pytest.raises(NPBParseError):
+        fetch_hitting(2026, session=sess)

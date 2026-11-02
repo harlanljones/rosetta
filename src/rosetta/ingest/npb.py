@@ -38,6 +38,10 @@ from rosetta.ingest.kbo import FIP_CONSTANT, WOBA_W, _row_get
 from rosetta.paths import SNAPSHOT_DIR, ensure_data_dirs
 from rosetta.schema import HITTER_COLUMNS, PITCHER_COLUMNS
 
+#: Output columns: the schema lists plus age provenance (see schema.OPTIONAL_COLUMN_DEFAULTS).
+HITTER_OUT_COLUMNS = [*HITTER_COLUMNS, "age_source"]
+PITCHER_OUT_COLUMNS = [*PITCHER_COLUMNS, "age_source"]
+
 BASE = "https://npb.jp"
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0"}
 
@@ -196,6 +200,20 @@ def fetch_birth_year(html: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+class NPBParseError(ValueError):
+    """A stats page parsed to no table or no rows where one was expected."""
+
+
+def parse_stat_page(html: str, url: str) -> tuple[list[str], list[dict]]:
+    """Parse an NPB stats page, raising instead of returning an empty table."""
+    headers, rows = parse_table(html)
+    if not headers or not rows:
+        raise NPBParseError(
+            f"no stat table rows parsed from {url}; the NPB page layout may have changed"
+        )
+    return headers, rows
+
+
 def _to_float(x: str) -> float:
     try:
         return float(str(x).replace(",", ""))
@@ -244,8 +262,9 @@ def fetch_hitting(
     """Central + Pacific batting tables for a season (raw columns + ids)."""
     sess = session or NPBSession()
     id_map = id_map or {}
-    h1, r1 = parse_table(sess.get_season(stat_url(season, "bat_c"), season))
-    h2, r2 = parse_table(sess.get_season(stat_url(season, "bat_p"), season))
+    url_c, url_p = stat_url(season, "bat_c"), stat_url(season, "bat_p")
+    h1, r1 = parse_stat_page(sess.get_season(url_c, season), url_c)
+    h2, r2 = parse_stat_page(sess.get_season(url_p, season), url_p)
     df = _merge_leagues(_frame(h1, r1), _frame(h2, r2))
     if not df.empty:
         df["_npb_id"] = df["player_name"].map(id_map).fillna("")
@@ -258,8 +277,9 @@ def fetch_pitching(
     """Central + Pacific pitching tables for a season (raw columns + ids)."""
     sess = session or NPBSession()
     id_map = id_map or {}
-    h1, r1 = parse_table(sess.get_season(stat_url(season, "pit_c"), season))
-    h2, r2 = parse_table(sess.get_season(stat_url(season, "pit_p"), season))
+    url_c, url_p = stat_url(season, "pit_c"), stat_url(season, "pit_p")
+    h1, r1 = parse_stat_page(sess.get_season(url_c, season), url_c)
+    h2, r2 = parse_stat_page(sess.get_season(url_p, season), url_p)
     df = _merge_leagues(_frame(h1, r1), _frame(h2, r2))
     if not df.empty:
         df["_npb_id"] = df["player_name"].map(id_map).fillna("")
@@ -329,6 +349,7 @@ def normalize_hitting(
                 "team": TEAM_NAMES.get(team_ab, team_ab),
                 "role": "batter",
                 "age": float(season - by) if by else 27.0,
+                "age_source": "birth_year" if by else "imputed",
                 "pa": pa,
                 "g": get("G"),
                 "bb_pct": bb_pct,
@@ -349,7 +370,7 @@ def normalize_hitting(
                 "is_synthetic": False,
             }
         )
-    return pd.DataFrame(rows, columns=HITTER_COLUMNS)
+    return pd.DataFrame(rows, columns=HITTER_OUT_COLUMNS)
 
 
 def normalize_pitching(
@@ -390,6 +411,7 @@ def normalize_pitching(
                 "team": TEAM_NAMES.get(team_ab, team_ab),
                 "role": "pitcher",
                 "age": float(season - by) if by else 27.0,
+                "age_source": "birth_year" if by else "imputed",
                 "ip": ip,
                 "g": get("G"),
                 "gs": 0.0,  # not published on leaderboard tables
@@ -407,7 +429,7 @@ def normalize_pitching(
                 "is_synthetic": False,
             }
         )
-    return pd.DataFrame(rows, columns=PITCHER_COLUMNS)
+    return pd.DataFrame(rows, columns=PITCHER_OUT_COLUMNS)
 
 
 def fetch_npb_season(

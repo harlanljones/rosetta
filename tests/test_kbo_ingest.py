@@ -133,3 +133,36 @@ def test_frames_validate() -> None:
 
     validate_hitter_frame(normalize_hitting(fetch_hitting(2026, session=_session()), 2026))
     validate_pitcher_frame(normalize_pitching(fetch_pitching(2026, session=_session()), 2026))
+
+
+def test_normalize_age_source_birth_year_vs_imputed() -> None:
+    df = fetch_hitting(2026, session=_session())
+    imputed = normalize_hitting(df, 2026)
+    assert "age_source" in imputed.columns
+    assert (imputed["age_source"] == "imputed").all()
+    assert (imputed["age"] == 27.0).all()
+    kid = imputed.iloc[0]["player_id"].split("-")[1]
+    aged = normalize_hitting(df, 2026, birth_years={kid: 1993})
+    row = aged.iloc[0]
+    assert row["age_source"] == "birth_year"
+    assert row["age"] == 33.0
+
+
+def test_normalize_pitching_age_source_birth_year_vs_imputed() -> None:
+    raw = fetch_pitching(2026, session=_session())
+    pid = str(raw.iloc[0]["_kbo_id"])
+    assert pid
+    imputed = normalize_pitching(raw, 2026)
+    assert "age_source" in imputed.columns
+    assert (imputed["age_source"] == "imputed").all()
+    aged = normalize_pitching(raw, 2026, birth_years={pid: 1990})
+    row = aged[aged["player_id"] == f"kbo-{pid}"].iloc[0]
+    assert row["age_source"] == "birth_year"
+    assert row["age"] == 36.0
+
+
+def test_empty_frames_keep_age_source_column() -> None:
+    import pandas as pd
+
+    assert "age_source" in normalize_hitting(pd.DataFrame(), 2026).columns
+    assert "age_source" in normalize_pitching(pd.DataFrame(), 2026).columns
