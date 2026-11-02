@@ -18,11 +18,14 @@ lint:
 snapshots:
 	$(PYTHON) -m rosetta.ingest.generate_snapshots
 
+# 2005-2026 comma list; ages stay on so NPB/KBO rows carry age_source.
+SEASONS ?= $(shell seq -s, 2005 2026)
+
 live-data:
-	rosetta fetch-statsapi --seasons 2024,2025 --sport 11 --league-label AAA
-	rosetta fetch-statsapi --seasons 2024,2025 --sport 1 --league-label MLB
-	rosetta fetch-kbo --seasons 2024,2025 --no-with-ages
-	rosetta fetch-npb --seasons 2024,2025 --no-with-ages
+	rosetta fetch-statsapi --seasons $(SEASONS) --sport 11 --league-label AAA
+	rosetta fetch-statsapi --seasons $(SEASONS) --sport 1 --league-label MLB
+	rosetta fetch-kbo --seasons $(SEASONS)
+	rosetta fetch-npb --seasons $(SEASONS)
 	rosetta generate-transfers
 	rm -f data/outputs/factors.json
 	$(MAKE) factors
