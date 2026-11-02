@@ -207,6 +207,23 @@ class TranslationResult(BaseModel):
     fip: float | None = None
     fip_low: float | None = None
     fip_high: float | None = None
+    # Grades (filled only when reference constants are supplied)
+    position: str | None = None
+    wrc_plus: float | None = None
+    wrc_plus_low: float | None = None
+    wrc_plus_high: float | None = None
+    fip_minus: float | None = None
+    fip_minus_low: float | None = None
+    fip_minus_high: float | None = None
+    grade: float | None = None
+    grade_low: float | None = None
+    grade_high: float | None = None
+    war: float | None = None
+    war_low: float | None = None
+    war_high: float | None = None
+    dollars: float | None = None
+    dollars_low: float | None = None
+    dollars_high: float | None = None
     sample_pa: float = 0.0
     sample_ip: float = 0.0
     n_movers_path: int = 0
