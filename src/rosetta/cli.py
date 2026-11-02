@@ -539,6 +539,23 @@ def derive_park_factors_cmd(
     rprint(f"[green]Park factors ({len(pf)} parks) →[/green] {out}")
 
 
+@app.command("derive-runs-park-factors")
+def derive_runs_park_factors_cmd(
+    snapshots: Path = typer.Option(SNAPSHOT_DIR, help="Dir with game_logs_{npb,kbo}.csv"),
+    out: Path = typer.Option(OUTPUT_DIR / "runs_park_factors.csv"),
+) -> None:
+    """Derive NPB/KBO runs park factors (home vs road, 3-season, regressed) from game logs."""
+    from rosetta.models.park import load_runs_park_factors
+
+    pf = load_runs_park_factors(snapshots)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    pf.to_csv(out, index=False)
+    if pf.empty:
+        rprint(f"[yellow]No game-log rows found; wrote an empty table →[/yellow] {out}")
+    else:
+        rprint(f"[green]Runs park factors ({len(pf)} team-seasons) →[/green] {out}")
+
+
 @app.command("generate-transfers")
 def generate_transfers_cmd(
     register: Path = typer.Option(
