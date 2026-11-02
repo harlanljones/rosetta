@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from rosetta.ingest.loaders import load_all_seasons, load_transfers
+from rosetta.ingest.loaders import classify_direction, load_all_seasons, load_transfers
 from rosetta.models.park import neutralize
 from rosetta.paths import SNAPSHOT_DIR
 
@@ -60,6 +60,12 @@ def _with_uuid_index(
     )
     uuid_idx = df2.set_index(["key_uuid", "season", "league"], drop=False)
     return pid_idx, uuid_idx
+
+
+def _age_source(line: pd.Series) -> str:
+    """The season row's ``age_source`` ("" when absent or blank)."""
+    val = line.get("age_source", "")
+    return "" if val is None or pd.isna(val) else str(val)
 
 
 def pair_seasons(
@@ -127,6 +133,9 @@ def pair_seasons(
         else:
             pre = _park_neutralize_line(pre, rate_stats=_ERA_STATS)
             post = _park_neutralize_line(post, rate_stats=_ERA_STATS)
+        direction = rec.get("direction")
+        if direction is None or pd.isna(direction) or not str(direction).strip():
+            direction = classify_direction(rec["from_league"], rec["to_league"])
         row = {
             "player_id": rec["player_id"],
             "player_name": rec["player_name"],
@@ -138,6 +147,9 @@ def pair_seasons(
             "age_from": float(rec["age_from"]),
             "age_to": float(rec["age_to"]),
             "holdout": bool(rec.get("holdout", False)),
+            "direction": str(direction),
+            "pre_age_source": _age_source(pre),
+            "post_age_source": _age_source(post),
         }
         for s in stats:
             row[f"pre_{s}"] = float(pre[s])
@@ -173,7 +185,8 @@ def build_cohort(
         from rosetta.ingest.chadwick import build_id_crosswalk, load_register
 
         register = load_register(resolved_chadwick)
-        crosswalk = build_id_crosswalk(register)
+        root = Path(snapshot_dir) if snapshot_dir else SNAPSHOT_DIR
+        crosswalk = build_id_crosswalk(register, kbo_foreign_map_path=root / "kbo_foreign_map.csv")
 
     paired = pair_seasons(transfers, batters, pitchers, id_crosswalk=crosswalk)
     if paired.empty:

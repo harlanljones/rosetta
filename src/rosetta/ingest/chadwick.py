@@ -147,6 +147,61 @@ def load_kbo_id_map(path: Path | None = None) -> dict[str, str]:
     return out
 
 
+KBO_FOREIGN_MAP_COLUMNS = ("kbo_player_id", "mlbam_id", "name_en", "source")
+
+
+def load_kbo_foreign_map(path: Path | None = None) -> dict[str, str]:
+    """Load ``kbo_foreign_map.csv`` as ``{"kbo-<id>": "<mlbam id>"}``.
+
+    Format: header ``kbo_player_id,mlbam_id,name_en,source``; one row per
+    foreign player on a KBO roster. The committed file is header-only. The
+    local refresh (run where koreabaseball.com is reachable) fills it from the
+    English KBO site's roster pages, pairing each foreign player with their
+    MLBAM id. Needed because KBO names are romanized from Hangul, so foreign
+    players never match the Chadwick register by name. Rows with a blank id are
+    skipped; a missing file yields an empty map.
+    """
+    path = Path(path) if path else SNAPSHOT_DIR / "kbo_foreign_map.csv"
+    if not path.exists():
+        return {}
+    frame = pd.read_csv(path, dtype=str)
+    if frame.empty or not {"kbo_player_id", "mlbam_id"} <= set(frame.columns):
+        return {}
+    out: dict[str, str] = {}
+    for kbo_raw, mlbam_raw in zip(frame["kbo_player_id"], frame["mlbam_id"], strict=True):
+        if pd.isna(kbo_raw) or pd.isna(mlbam_raw):
+            continue
+        kbo_id = str(kbo_raw).strip()
+        mlbam = str(mlbam_raw).strip()
+        if not kbo_id or not mlbam:
+            continue
+        try:
+            mlbam = str(int(float(mlbam)))
+        except (ValueError, TypeError):
+            pass
+        key = kbo_id if kbo_id.startswith("kbo-") else f"kbo-{kbo_id}"
+        out[key] = mlbam
+    return out
+
+
+def apply_kbo_foreign_map(
+    crosswalk: dict[str, str], foreign_map: dict[str, str]
+) -> dict[str, str]:
+    """Bridge KBO ids to mlbam ids, taking precedence over Chadwick name matches.
+
+    Each ``kbo-<id>`` maps to the same key_uuid as ``mlbam-<id>`` when Chadwick
+    knows that mlbam id; otherwise to a synthetic ``mlbam:<id>`` key that the
+    mlbam id shares, so the KBO and MLB/AAA lines still pair.
+    """
+    cross = dict(crosswalk)
+    for kbo_key, mlbam in foreign_map.items():
+        mlbam_key = f"mlbam-{mlbam}"
+        uid = cross.get(mlbam_key) or f"mlbam:{mlbam}"
+        cross[mlbam_key] = uid
+        cross[kbo_key] = uid
+    return cross
+
+
 def enrich_crosswalk_with_kbo(
     crosswalk: dict[str, str],
     register: pd.DataFrame,
@@ -220,12 +275,18 @@ def enrich_crosswalk_with_kbo(
     return cross
 
 
-def build_id_crosswalk(register: pd.DataFrame) -> dict[str, str]:
+def build_id_crosswalk(
+    register: pd.DataFrame, *, kbo_foreign_map_path: Path | None = None
+) -> dict[str, str]:
     """Build {prefixed_league_id → key_uuid} crosswalk.
 
     Maps IDs like 'mlbam-660271', 'kbo-62404', 'npb-1305137' to their
     Chadwick person UUID, so cohort building can link the same person across
     leagues that use different ID namespaces.
+
+    KBO foreign players are bridged first via ``kbo_foreign_map.csv``
+    (``kbo_foreign_map_path``, default ``data/snapshots/kbo_foreign_map.csv``)
+    before any Chadwick name matching.
     """
     cross: dict[str, str] = {}
     for _, row in register.iterrows():
@@ -267,7 +328,8 @@ def build_id_crosswalk(register: pd.DataFrame) -> dict[str, str]:
                 # Ambiguous full name — drop it rather than mis-link.
                 cross.pop(name_key, None)
                 cross[name_key] = ""  # tombstone: never link ambiguous names
-    return enrich_crosswalk_with_kbo(cross, register)
+    enriched = enrich_crosswalk_with_kbo(cross, register)
+    return apply_kbo_foreign_map(enriched, load_kbo_foreign_map(kbo_foreign_map_path))
 
 
 def cross_reference_seasons(
