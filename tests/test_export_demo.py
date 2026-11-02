@@ -195,3 +195,138 @@ def test_exporters_refuse_non_real_data(builder, payload) -> None:
             builder(*payload, target_season=2025)
         else:
             builder(payload)
+
+
+# ---- WP8: posting class and grade fields in the bundle -------------------
+
+load_posting_class = _EXPORT_DEMO.load_posting_class
+POSTING_CLASS_PATH = _EXPORT_DEMO.POSTING_CLASS_PATH
+POSTING_CLASS_HEADER = "player_name,league,role,note"
+
+
+def test_shipped_posting_class_file_is_header_only() -> None:
+    lines = POSTING_CLASS_PATH.read_text().strip().splitlines()
+
+    assert lines == [POSTING_CLASS_HEADER]
+    assert load_posting_class(POSTING_CLASS_PATH) == []
+
+
+def test_load_posting_class_keeps_file_order_and_strips_fields(tmp_path: Path) -> None:
+    path = tmp_path / "posting.csv"
+    path.write_text(
+        POSTING_CLASS_HEADER + "\n"
+        " Teruaki Sato , NPB , batter , first in file \n"
+        "Some Pitcher,KBO,pitcher,\n"
+    )
+
+    rows = load_posting_class(path)
+
+    assert rows == [
+        {"player_name": "Teruaki Sato", "league": "NPB", "role": "batter", "note": "first in file"},
+        {"player_name": "Some Pitcher", "league": "KBO", "role": "pitcher", "note": ""},
+    ]
+
+
+def test_load_posting_class_rejects_wrong_header(tmp_path: Path) -> None:
+    path = tmp_path / "posting.csv"
+    path.write_text("name,league,role\nTeruaki Sato,NPB,batter\n")
+
+    with pytest.raises(SystemExit, match="header"):
+        load_posting_class(path)
+
+
+def test_load_posting_class_rejects_unknown_role(tmp_path: Path) -> None:
+    path = tmp_path / "posting.csv"
+    path.write_text(POSTING_CLASS_HEADER + "\nTeruaki Sato,NPB,catcher,\n")
+
+    with pytest.raises(SystemExit, match="role"):
+        load_posting_class(path)
+
+
+def test_load_posting_class_missing_file_is_empty(tmp_path: Path) -> None:
+    assert load_posting_class(tmp_path / "absent.csv") == []
+
+
+def _board_row(**overrides) -> dict:
+    row = {
+        "player_id": "sato",
+        "player_name": "Teruaki Sato",
+        "from_league": "NPB",
+        "to_league": "MLB",
+        "role": "batter",
+        "season": 2025,
+        "path": ["NPB", "MLB"],
+        "age": 27.0,
+        "woba": 0.414,
+        "woba_low": 0.36,
+        "woba_high": 0.47,
+        "is_synthetic": False,
+        "wrc_plus": 131.4,
+        "wrc_plus_low": 110.2,
+        "wrc_plus_high": 152.9,
+        "fip_minus": None,
+        "fip_minus_low": None,
+        "fip_minus_high": None,
+        "grade": 60.0,
+        "grade_low": 50.0,
+        "grade_high": 70.0,
+        "war": 3.2,
+        "war_low": 1.9,
+        "war_high": 4.5,
+        "dollars": 25_600_000.0,
+        "dollars_low": 15_200_000.0,
+        "dollars_high": 36_000_000.0,
+        "position": "2B",
+        "source": "fixture-real",
+    }
+    row.update(overrides)
+    return row
+
+
+def _leaderboard_raw(*batters: dict, pitchers: list[dict] | None = None) -> dict:
+    return {
+        "season": 2025,
+        "data_mode": "real",
+        "source_counts": {"batter": {"fixture-real": len(batters)}},
+        "boards": {"batter": list(batters), "pitcher": pitchers or []},
+    }
+
+
+def test_build_leaderboard_keeps_grade_fields_and_nulls() -> None:
+    raw = _leaderboard_raw(_board_row())
+
+    out = build_leaderboard(raw)
+
+    row = out["boards"]["batter"][0]
+    assert row["wrc_plus"] == 131.4
+    assert row["wrc_plus_low"] == 110.2
+    assert row["grade"] == 60.0
+    assert row["war_high"] == 4.5
+    assert row["dollars_low"] == 15_200_000.0
+    assert row["position"] == "2B"
+    assert "fip_minus" in row and row["fip_minus"] is None
+    assert "is_synthetic" not in row
+
+
+def test_build_leaderboard_posting_class_defaults_to_empty() -> None:
+    assert build_leaderboard(_leaderboard_raw(_board_row()))["posting_class"] == []
+
+
+def test_build_leaderboard_attaches_posting_class_in_file_order_with_board_metrics() -> None:
+    raw = _leaderboard_raw(_board_row())
+    posting = [
+        {"player_name": "Unlisted Pitcher", "league": "KBO", "role": "pitcher", "note": "n1"},
+        {"player_name": "teruaki sato", "league": "NPB", "role": "batter", "note": "n2"},
+    ]
+
+    out = build_leaderboard(raw, posting_class=posting)
+
+    first, second = out["posting_class"]
+    assert first["player_name"] == "Unlisted Pitcher"
+    assert first["fip_minus"] is None and first["grade"] is None and first["war"] is None
+    assert second["player_name"] == "teruaki sato"
+    assert second["league"] == "NPB"
+    assert second["note"] == "n2"
+    assert second["wrc_plus"] == 131.4
+    assert second["grade"] == 60.0
+    assert second["dollars_high"] == 36_000_000.0
