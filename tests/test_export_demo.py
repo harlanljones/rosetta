@@ -195,3 +195,226 @@ def test_exporters_refuse_non_real_data(builder, payload) -> None:
             builder(*payload, target_season=2025)
         else:
             builder(payload)
+
+
+# ---- WP8: posting class and grade fields in the bundle -------------------
+
+load_posting_class = _EXPORT_DEMO.load_posting_class
+POSTING_CLASS_PATH = _EXPORT_DEMO.POSTING_CLASS_PATH
+POSTING_CLASS_HEADER = "player_name,league,role,note"
+
+
+def test_shipped_posting_class_file_loads_with_sato_first() -> None:
+    lines = POSTING_CLASS_PATH.read_text().strip().splitlines()
+
+    assert lines[0] == POSTING_CLASS_HEADER
+    entries = load_posting_class(POSTING_CLASS_PATH)
+    assert entries, "shipped posting class should not be empty"
+    first = entries[0]
+    name = first["player_name"] if isinstance(first, dict) else first.player_name
+    assert name == "Sato, Teruaki"
+
+
+def test_load_posting_class_keeps_file_order_and_strips_fields(tmp_path: Path) -> None:
+    path = tmp_path / "posting.csv"
+    path.write_text(
+        POSTING_CLASS_HEADER + "\n"
+        " Teruaki Sato , NPB , batter , first in file \n"
+        "Some Pitcher,KBO,pitcher,\n"
+    )
+
+    rows = load_posting_class(path)
+
+    assert rows == [
+        {"player_name": "Teruaki Sato", "league": "NPB", "role": "batter", "note": "first in file"},
+        {"player_name": "Some Pitcher", "league": "KBO", "role": "pitcher", "note": ""},
+    ]
+
+
+def test_load_posting_class_rejects_wrong_header(tmp_path: Path) -> None:
+    path = tmp_path / "posting.csv"
+    path.write_text("name,league,role\nTeruaki Sato,NPB,batter\n")
+
+    with pytest.raises(SystemExit, match="header"):
+        load_posting_class(path)
+
+
+def test_load_posting_class_rejects_unknown_role(tmp_path: Path) -> None:
+    path = tmp_path / "posting.csv"
+    path.write_text(POSTING_CLASS_HEADER + "\nTeruaki Sato,NPB,catcher,\n")
+
+    with pytest.raises(SystemExit, match="role"):
+        load_posting_class(path)
+
+
+def test_load_posting_class_missing_file_is_empty(tmp_path: Path) -> None:
+    assert load_posting_class(tmp_path / "absent.csv") == []
+
+
+def _board_row(**overrides) -> dict:
+    row = {
+        "player_id": "sato",
+        "player_name": "Teruaki Sato",
+        "from_league": "NPB",
+        "to_league": "MLB",
+        "role": "batter",
+        "season": 2025,
+        "path": ["NPB", "MLB"],
+        "age": 27.0,
+        "woba": 0.414,
+        "woba_low": 0.36,
+        "woba_high": 0.47,
+        "is_synthetic": False,
+        "wrc_plus": 131.4,
+        "wrc_plus_low": 110.2,
+        "wrc_plus_high": 152.9,
+        "fip_minus": None,
+        "fip_minus_low": None,
+        "fip_minus_high": None,
+        "grade": 60.0,
+        "grade_low": 50.0,
+        "grade_high": 70.0,
+        "war": 3.2,
+        "war_low": 1.9,
+        "war_high": 4.5,
+        "dollars": 25_600_000.0,
+        "dollars_low": 15_200_000.0,
+        "dollars_high": 36_000_000.0,
+        "position": "2B",
+        "source": "fixture-real",
+    }
+    row.update(overrides)
+    return row
+
+
+def _leaderboard_raw(*batters: dict, pitchers: list[dict] | None = None) -> dict:
+    return {
+        "season": 2025,
+        "data_mode": "real",
+        "source_counts": {"batter": {"fixture-real": len(batters)}},
+        "boards": {"batter": list(batters), "pitcher": pitchers or []},
+    }
+
+
+def test_build_leaderboard_keeps_grade_fields_and_nulls() -> None:
+    raw = _leaderboard_raw(_board_row())
+
+    out = build_leaderboard(raw)
+
+    row = out["boards"]["batter"][0]
+    assert row["wrc_plus"] == 131.4
+    assert row["wrc_plus_low"] == 110.2
+    assert row["grade"] == 60.0
+    assert row["war_high"] == 4.5
+    assert row["dollars_low"] == 15_200_000.0
+    assert row["position"] == "2B"
+    assert "fip_minus" in row and row["fip_minus"] is None
+    assert "is_synthetic" not in row
+
+
+def test_build_leaderboard_posting_class_defaults_to_empty() -> None:
+    assert build_leaderboard(_leaderboard_raw(_board_row()))["posting_class"] == []
+
+
+def test_build_leaderboard_attaches_posting_class_in_file_order_with_board_metrics() -> None:
+    raw = _leaderboard_raw(_board_row())
+    posting = [
+        {"player_name": "Unlisted Pitcher", "league": "KBO", "role": "pitcher", "note": "n1"},
+        {"player_name": "teruaki sato", "league": "NPB", "role": "batter", "note": "n2"},
+    ]
+
+    out = build_leaderboard(raw, posting_class=posting)
+
+    first, second = out["posting_class"]
+    assert first["player_name"] == "Unlisted Pitcher"
+    assert first["fip_minus"] is None and first["grade"] is None and first["war"] is None
+    assert second["player_name"] == "teruaki sato"
+    assert second["league"] == "NPB"
+    assert second["note"] == "n2"
+    assert second["wrc_plus"] == 131.4
+    assert second["grade"] == 60.0
+    assert second["dollars_high"] == 36_000_000.0
+
+
+# ---------------------------------------------------------------------------
+# international_validation block
+# ---------------------------------------------------------------------------
+
+load_international_validation = _EXPORT_DEMO.load_international_validation
+
+
+def _intl_payload(league: str, *, data_mode: str = "real", verdict: str = "PASS") -> dict:
+    def metric(role: str, stat: str, n: int, mae: float, base: float, cov: float) -> dict:
+        return {
+            "league": league, "role": role, "stat": stat, "n": n, "mae": mae,
+            "rmse": mae * 1.2, "baseline_mae": base, "baseline_rmse": base * 1.2,
+            "coverage_80": cov,
+        }
+
+    return {
+        "metadata": {"data_mode": data_mode, "league": league},
+        "gate": {"verdict": verdict},
+        "pooled": [
+            metric("batter", "woba", 41, 0.021234, 0.026789, 0.7804),
+            metric("batter", "iso", 41, 0.04, 0.05, 0.8),
+            metric("pitcher", "fip", 33, 0.5123456, 0.6234567, 0.8123),
+        ],
+    }
+
+
+def _write_intl(directory: Path, league: str, **kwargs) -> None:
+    import json
+
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"international-rolling-{league.lower()}.json").write_text(
+        json.dumps(_intl_payload(league, **kwargs))
+    )
+
+
+def test_load_international_validation_missing_dir_or_files_is_none(tmp_path: Path) -> None:
+    assert load_international_validation(tmp_path / "absent") is None
+    (tmp_path / "empty").mkdir()
+    assert load_international_validation(tmp_path / "empty") is None
+
+
+def test_load_international_validation_returns_compact_gated_rows(tmp_path: Path) -> None:
+    _write_intl(tmp_path, "NPB")
+    _write_intl(tmp_path, "KBO", verdict="INSUFFICIENT")
+    rows = load_international_validation(tmp_path)
+
+    assert [(r["league"], r["role"], r["stat"]) for r in rows] == [
+        ("KBO", "batter", "woba"), ("KBO", "pitcher", "fip"),
+        ("NPB", "batter", "woba"), ("NPB", "pitcher", "fip"),
+    ]
+    npb_woba = rows[2]
+    assert npb_woba == {
+        "league": "NPB", "role": "batter", "stat": "woba", "n": 41, "mae": 0.0212,
+        "baseline_mae": 0.0268, "coverage_80": 0.78, "gate": "PASS",
+    }
+    assert rows[3]["mae"] == 0.512 and rows[3]["baseline_mae"] == 0.623
+    assert rows[0]["gate"] == "INSUFFICIENT"
+
+
+def test_load_international_validation_skips_non_real_payloads(tmp_path: Path) -> None:
+    _write_intl(tmp_path, "NPB", data_mode="synthetic")
+    assert load_international_validation(tmp_path) is None
+
+
+def test_build_backtest_attaches_international_validation_only_when_given() -> None:
+    backtest = {
+        "metadata": {"data_mode": "real"},
+        "metrics": [
+            {"role": "batter", "stat": "woba", "n": 2, "mae": 0.02, "rmse": 0.03,
+             "baseline_mae": 0.04, "baseline_rmse": 0.05, "coverage_80": 0.5}
+        ],
+        "detail": [],
+    }
+    rolling = {"metadata": {"target_seasons": []}, "summary": [], "pooled": []}
+
+    assert "international_validation" not in build_backtest(backtest, rolling, target_season=2025)
+    assert "international_validation" not in build_backtest(
+        backtest, rolling, target_season=2025, international_validation=None
+    )
+    rows = [{"league": "NPB", "role": "batter", "stat": "woba", "n": 12}]
+    out = build_backtest(backtest, rolling, target_season=2025, international_validation=rows)
+    assert out["international_validation"] == rows

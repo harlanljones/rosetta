@@ -9,6 +9,19 @@ import pandas as pd
 from rosetta.ingest.loaders import load_all_seasons
 from rosetta.models.calibration import apply_affine_stat, calibration_applies
 from rosetta.models.factors import HITTER_STATS, PITCHER_STATS, LeagueFactorModel
+from rosetta.models.grades import (
+    DEFAULT_PA,
+    GradeBundle,
+    MlbConstants,
+    grade_batter_line,
+    grade_pitcher_line,
+    pitcher_innings,
+)
+from rosetta.models.park import (
+    load_runs_park_factors,
+    lookup_runs_park_factor,
+    neutralize_line_runs,
+)
 from rosetta.models.role import apply_role_shift, detect_role, role_shift
 from rosetta.schema import League, Role, TranslationResult
 
@@ -35,12 +48,28 @@ def translate_line(
     from_league: str | None = None,
     to_league: str = "MLB",
     target_pitch_role: str | None = None,
+    constants: MlbConstants | None = None,
+    park_factors: pd.DataFrame | None = None,
 ) -> TranslationResult:
-    """Translate one normalized season line to the target league."""
+    """Translate one normalized season line to the target league.
+
+    ``park_factors`` (runs park factors from game logs, see
+    ``rosetta.models.park``) neutralizes half the park effect on NPB/KBO source
+    lines for their league-team-season, before league factors. Absent or empty
+    frames, and missing team-seasons, leave the line untouched.
+
+    When ``constants`` is given, also fill wRC+ / FIP-, 20-80 grade, WAR and
+    dollars (each with low/high) at default playing time. Otherwise those
+    fields stay ``None``.
+    """
     if isinstance(line, dict):
         line = pd.Series(line)
     role = str(line.get("role", "batter"))
     src = from_league or str(line["league"])
+    if park_factors is not None and not park_factors.empty:
+        pf = lookup_runs_park_factor(park_factors, src, line.get("team"), line.get("season"))
+        if pf is not None:
+            line = neutralize_line_runs(line, pf, role)
     stats = HITTER_STATS if role == "batter" else PITCHER_STATS
     path = model.path(src, to_league)
 
@@ -142,7 +171,60 @@ def translate_line(
         result.fip_low = lower.get("fip", _recombine_fip(lower) if lower else result.fip)
         result.fip_high = upper.get("fip", _recombine_fip(upper) if upper else result.fip)
 
+    if constants is not None:
+        _apply_grades(result, line, constants, target_pitch_role)
+
     return result
+
+
+def _num(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        out = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return None if pd.isna(out) else out
+
+
+def _apply_grades(
+    result: TranslationResult,
+    line: pd.Series,
+    constants: MlbConstants,
+    target_pitch_role: str | None,
+) -> None:
+    bundle: GradeBundle
+    if result.role == Role.BATTER:
+        position = line.get("position", None)
+        position = "" if position is None or pd.isna(position) else str(position)
+        bundle = grade_batter_line(
+            result.woba,  # type: ignore[arg-type]
+            result.woba_low,  # type: ignore[arg-type]
+            result.woba_high,  # type: ignore[arg-type]
+            DEFAULT_PA,
+            position,
+            _num(line.get("def_runs", None)),
+            constants,
+        )
+        result.position = bundle.position or None
+        result.notes.extend(bundle.notes)
+    else:
+        ip, pitch_role = pitcher_innings(
+            _num(line.get("gs", None)), _num(line.get("g", None)), target_pitch_role
+        )
+        bundle = grade_pitcher_line(
+            result.fip,  # type: ignore[arg-type]
+            result.fip_low,  # type: ignore[arg-type]
+            result.fip_high,  # type: ignore[arg-type]
+            ip,
+            constants,
+        )
+        result.notes.append(f"WAR/dollars at {ip:g} IP ({pitch_role} default).")
+    for name in ("wrc_plus", "fip_minus", "grade", "war", "dollars"):
+        point, low, high = getattr(bundle, name)
+        setattr(result, name, point)
+        setattr(result, f"{name}_low", low)
+        setattr(result, f"{name}_high", high)
 
 
 def translate(
@@ -156,6 +238,8 @@ def translate(
     snapshot_dir: Path | str | None = None,
     to_league: str = "MLB",
     target_pitch_role: str | None = None,
+    constants: MlbConstants | None = None,
+    park_factors: pd.DataFrame | None = None,
 ) -> TranslationResult:
     """Public API: translate a player-season from `from_league` to MLB (default).
 
@@ -178,12 +262,16 @@ def translate(
         if sub.empty:
             raise LookupError(f"No season {season} for {player!r} in {from_league}")
     line = sub.sort_values("season").iloc[-1]
+    if park_factors is None:
+        park_factors = load_runs_park_factors(snapshot_dir)
     return translate_line(
         line,
         model=model,
         from_league=from_league,
         to_league=to_league,
         target_pitch_role=target_pitch_role,
+        constants=constants,
+        park_factors=park_factors,
     )
 
 
@@ -194,6 +282,7 @@ def translate_frame(
     from_league_col: str = "league",
     to_league: str = "MLB",
     target_pitch_role: str | None = None,
+    constants: MlbConstants | None = None,
 ) -> pd.DataFrame:
     """Vectorized convenience: translate each row, return flat DataFrame."""
     records = []
@@ -204,6 +293,7 @@ def translate_frame(
             from_league=str(row[from_league_col]),
             to_league=to_league,
             target_pitch_role=target_pitch_role,
+            constants=constants,
         )
         flat = tr.model_dump()
         rates = flat.pop("rates")

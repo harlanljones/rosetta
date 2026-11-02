@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pandas as pd
 import typer
 from rich import print as rprint
 from rich.table import Table
@@ -14,12 +15,23 @@ from rosetta.cohort.builder import build_cohort
 from rosetta.ingest.generate_snapshots import build_snapshots
 from rosetta.ingest.loaders import load_all_seasons
 from rosetta.models.factors import fit_factor_model
+from rosetta.models.grades import load_constants
 from rosetta.paths import OUTPUT_DIR, SNAPSHOT_DIR, ensure_data_dirs
 from rosetta.translate.api import translate, translate_frame
 
 app = typer.Typer(
     help="Rosetta MLE — translate foreign/minor league stats to MLB scale.", no_args_is_help=True
 )
+
+
+def _season_list(spec: str) -> list[int]:
+    """Parse a --seasons option ("2024", "2022,2024" or "2005-2026") for typer."""
+    from rosetta.ingest.statsapi import parse_season_spec
+
+    try:
+        return parse_season_spec(spec)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--seasons") from exc
 
 
 @app.command("historical-backtest")
@@ -206,6 +218,85 @@ def historical_rolling_cmd(
         rprint(f"  {kind}: {path}")
 
 
+@app.command("international-rolling")
+def international_rolling_cmd(
+    league: str = typer.Option(..., help="International league to validate: NPB or KBO"),
+    targets: str = typer.Option("2019-2026", help="Target MLB seasons, e.g. 2019-2026 or 2022,2024"),
+    snapshots: Path = typer.Option(SNAPSHOT_DIR, help="Real normalized snapshot directory"),
+    boot: int = typer.Option(250, help="Bootstrap resamples per fitted factor"),
+    seed: int = typer.Option(42, help="Deterministic bootstrap seed"),
+    min_pa: float = typer.Option(80.0, help="Minimum source and target batter PA"),
+    min_ip: float = typer.Option(30.0, help="Minimum source and target pitcher IP"),
+    estimator: str = typer.Option(
+        "ratio_of_means", help="Link estimator: ratio_of_means (default) or mean_ratio"
+    ),
+    out_dir: Path = typer.Option(OUTPUT_DIR / "international-rolling", help="Artifact directory"),
+) -> None:
+    """Refit per target season and score NPB/KBO exports on their first MLB season."""
+    from rosetta.backtest.historical import (
+        INTERNATIONAL_EVAL_LEAGUES,
+        run_international_rolling,
+        write_international_report,
+    )
+    from rosetta.ingest.statsapi import parse_season_spec
+
+    league = league.strip().upper()
+    if league not in INTERNATIONAL_EVAL_LEAGUES:
+        raise typer.BadParameter(
+            f"expected one of {', '.join(INTERNATIONAL_EVAL_LEAGUES)}", param_hint="--league"
+        )
+    try:
+        seasons = parse_season_spec(targets)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--targets") from exc
+    try:
+        payload = run_international_rolling(
+            snapshots,
+            league=league,
+            target_seasons=seasons,
+            n_boot=boot,
+            seed=seed,
+            min_pa=min_pa,
+            min_ip=min_ip,
+            estimator=estimator,
+        )
+        paths = write_international_report(payload, out_dir)
+    except (FileNotFoundError, ValueError, KeyError, RuntimeError) as exc:
+        rprint(f"[red]International rolling validation unavailable:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    metadata = payload["metadata"]
+    rprint(
+        f"[green]International rolling ({league} -> MLB):[/green] targets {seasons[0]}-{seasons[-1]}; "
+        f"scored {metadata['counts']['targets_scored']}, skipped {metadata['counts']['targets_skipped']}; "
+        f"detail rows {metadata['counts']['detail_rows']}"
+    )
+    for item in metadata["skipped"]:
+        role = f" ({item['role']})" if item.get("role") else ""
+        rprint(f"  [yellow]skipped {item['target_season']}{role}:[/yellow] {item['reason']}")
+
+    pooled = [r for r in payload["pooled"] if r["stat"] in {"woba", "fip"}]
+    if pooled:
+        table = Table(title=f"{league} pooled headline metrics")
+        for column in ("role", "stat", "n", "mae", "baseline_mae", "coverage_80"):
+            table.add_column(column)
+        for row in pooled:
+            table.add_row(
+                str(row["role"]), str(row["stat"]), str(row["n"]),
+                f"{float(row['mae']):.4f}", f"{float(row['baseline_mae']):.4f}",
+                f"{float(row['coverage_80']) * 100:.1f}%",
+            )
+        rprint(table)
+
+    gate = payload["gate"]
+    colour = {"PASS": "green", "FAIL": "red", "INSUFFICIENT": "yellow"}[gate["verdict"]]
+    rprint(f"[{colour}]Ship gate {league}: {gate['verdict']}[/{colour}]")
+    for row in gate["failing"]:
+        rprint(f"  {row['status']} {row['role']} {row['stat']} (n={row['n']}): {'; '.join(row['reasons'])}")
+    for kind, path in paths.items():
+        rprint(f"  {kind}: {path}")
+
+
 @app.command("generate-snapshots")
 def generate_snapshots_cmd(seed: int = 42) -> None:
     """Write synthetic offline snapshots for CI/demo."""
@@ -352,6 +443,9 @@ def leaderboard_cmd(
     from rosetta.models.factors import LeagueFactorModel
 
     model = LeagueFactorModel.load(factors)
+    # Reference constants for wRC+ / FIP- / grade / WAR / $. A missing constant
+    # serializes as null in the board rows rather than failing the build.
+    constants = load_constants(season, snapshot_dir=snapshots)
     boards = {}
     source_counts = {}
     for role, min_pt, pt_col in (("batter", min_pa, "pa"), ("pitcher", min_ip, "ip")):
@@ -367,7 +461,7 @@ def leaderboard_cmd(
         if df.empty:
             boards[role] = []
             continue
-        translated = translate_frame(df, model=model)
+        translated = translate_frame(df, model=model, constants=constants)
         for column in ("source", "is_synthetic", "team"):
             if column in df.columns:
                 translated[column] = df[column].to_numpy()
@@ -382,6 +476,16 @@ def leaderboard_cmd(
                 "season": season,
                 "data_mode": "all" if include_synthetic else "real",
                 "source_counts": source_counts,
+                "grade_constants": {
+                    "season": season,
+                    "source": constants.source or None,
+                    "wrc_plus_available": constants.woba_scale is not None
+                    and constants.lg_woba is not None
+                    and constants.lg_r_pa is not None,
+                    "fip_minus_available": constants.lg_fip is not None,
+                    "dollars_available": constants.dollars_per_war is not None,
+                    "notes": constants.notes,
+                },
                 "boards": boards,
             },
             indent=2,
@@ -403,7 +507,9 @@ def fetch_chadwick(
 
 @app.command("fetch-statsapi")
 def fetch_statsapi(
-    seasons: str = typer.Option("2024", help="Comma-separated seasons, e.g. 2022,2023,2024"),
+    seasons: str = typer.Option(
+        "2024", help="Seasons: comma list (2022,2024) and/or inclusive ranges (2005-2026)"
+    ),
     sport: int = typer.Option(11, help="Stats API sportId (11=AAA, 12=AA, 17=winter)"),
     league_label: str | None = typer.Option(
         None, help="Override league label (default from sportId)"
@@ -415,7 +521,7 @@ def fetch_statsapi(
     """Fetch season lines via the MLB Stats API into league snapshots."""
     from rosetta.ingest.statsapi import write_statsapi_snapshots
 
-    years = [int(s) for s in seasons.split(",") if s.strip()]
+    years = _season_list(seasons)
     root = write_statsapi_snapshots(
         years,
         sport,
@@ -429,7 +535,9 @@ def fetch_statsapi(
 
 @app.command("fetch-kbo")
 def fetch_kbo(
-    seasons: str = typer.Option("2025", help="Comma-separated seasons, e.g. 2023,2024,2025"),
+    seasons: str = typer.Option(
+        "2025", help="Seasons: comma list (2023,2025) and/or inclusive ranges (2005-2026)"
+    ),
     snapshots: Path = typer.Option(SNAPSHOT_DIR),
     with_ages: bool = typer.Option(True, help="Fetch detail pages for birth years"),
     delay: float = typer.Option(1.0, help="Seconds between requests"),
@@ -437,7 +545,7 @@ def fetch_kbo(
     """Fetch KBO season lines via koreabaseball.com into snapshots."""
     from rosetta.ingest.kbo import write_kbo_snapshots
 
-    years = [int(s) for s in seasons.split(",") if s.strip()]
+    years = _season_list(seasons)
     root = write_kbo_snapshots(years, out_dir=snapshots, with_ages=with_ages, delay=delay)
     rprint(f"[green]KBO snapshots →[/green] {root}")
 
@@ -458,7 +566,9 @@ def fetch_cpbl(
 
 @app.command("fetch-npb")
 def fetch_npb(
-    seasons: str = typer.Option("2025", help="Comma-separated seasons, e.g. 2024,2025"),
+    seasons: str = typer.Option(
+        "2025", help="Seasons: comma list (2024,2025) and/or inclusive ranges (2005-2026)"
+    ),
     snapshots: Path = typer.Option(SNAPSHOT_DIR),
     with_ages: bool = typer.Option(True, help="Fetch player cards for birth years"),
     delay: float = typer.Option(1.0, help="Seconds between requests"),
@@ -466,7 +576,7 @@ def fetch_npb(
     """Fetch NPB season lines via npb.jp BIS into snapshots."""
     from rosetta.ingest.npb import write_npb_snapshots
 
-    years = [int(s) for s in seasons.split(",") if s.strip()]
+    years = _season_list(seasons)
     root = write_npb_snapshots(years, out_dir=snapshots, with_ages=with_ages, delay=delay)
     rprint(f"[green]NPB snapshots →[/green] {root}")
 
@@ -539,6 +649,23 @@ def derive_park_factors_cmd(
     rprint(f"[green]Park factors ({len(pf)} parks) →[/green] {out}")
 
 
+@app.command("derive-runs-park-factors")
+def derive_runs_park_factors_cmd(
+    snapshots: Path = typer.Option(SNAPSHOT_DIR, help="Dir with game_logs_{npb,kbo}.csv"),
+    out: Path = typer.Option(OUTPUT_DIR / "runs_park_factors.csv"),
+) -> None:
+    """Derive NPB/KBO runs park factors (home vs road, 3-season, regressed) from game logs."""
+    from rosetta.models.park import load_runs_park_factors
+
+    pf = load_runs_park_factors(snapshots)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    pf.to_csv(out, index=False)
+    if pf.empty:
+        rprint(f"[yellow]No game-log rows found; wrote an empty table →[/yellow] {out}")
+    else:
+        rprint(f"[green]Runs park factors ({len(pf)} team-seasons) →[/green] {out}")
+
+
 @app.command("generate-transfers")
 def generate_transfers_cmd(
     register: Path = typer.Option(
@@ -558,6 +685,70 @@ def generate_transfers_cmd(
         out_path=out,
     )
     rprint(f"[green]Transfer pairs →[/green] {path}")
+
+
+#: (file league, file role, qualifying column, threshold) for the age gate.
+_AGE_GATE = (
+    ("npb", "batter", "pa", 100.0),
+    ("npb", "pitcher", "ip", 30.0),
+    ("kbo", "batter", "pa", 100.0),
+    ("kbo", "pitcher", "ip", 30.0),
+)
+
+
+def age_gap_rows(snapshots: Path) -> pd.DataFrame:
+    """Real NPB/KBO qualified rows whose age is imputed or missing.
+
+    Returns one row per offending player-season with league, season, role.
+    Synthetic rows are ignored, as are batters under 100 PA and pitchers under 30 IP.
+    """
+    found: list[pd.DataFrame] = []
+    for league, role, min_col, threshold in _AGE_GATE:
+        path = snapshots / f"{league}_{role}s.csv"
+        if not path.exists():
+            continue
+        df = pd.read_csv(path)
+        if df.empty:
+            continue
+        synthetic = (
+            df["is_synthetic"].astype(str).str.lower().eq("true")
+            if "is_synthetic" in df.columns
+            else pd.Series(False, index=df.index)
+        )
+        qualified = pd.to_numeric(df[min_col], errors="coerce").fillna(0.0) >= threshold
+        if "age_source" in df.columns:
+            age_source = df["age_source"].where(df["age_source"].notna(), "").astype(str).str.strip()
+        else:
+            age_source = pd.Series("", index=df.index)
+        offending = ~synthetic & qualified & age_source.isin(["", "imputed"])
+        hits = df.loc[offending, ["season"]].copy()
+        if hits.empty:
+            continue
+        hits["league"] = league.upper()
+        hits["role"] = role
+        found.append(hits)
+    if not found:
+        return pd.DataFrame(columns=["league", "season", "role"])
+    return pd.concat(found, ignore_index=True)
+
+
+@app.command("check-snapshots")
+def check_snapshots_cmd(
+    snapshots: Path = typer.Option(SNAPSHOT_DIR, help="Snapshot directory to check"),
+) -> None:
+    """Fail when real NPB/KBO qualified rows have imputed or missing ages."""
+    gaps = age_gap_rows(snapshots)
+    if gaps.empty:
+        rprint(f"[green]Ages OK:[/green] no imputed or missing NPB/KBO qualified ages in {snapshots}")
+        return
+    counts = gaps.groupby(["league", "season", "role"]).size().reset_index(name="rows")
+    for row in counts.sort_values(["league", "season", "role"]).itertuples(index=False):
+        rprint(f"{row.league} {int(row.season)} {row.role}: {int(row.rows)}")
+    rprint(
+        f"[red]Imputed or missing ages on {len(gaps)} real qualified NPB/KBO rows.[/red] "
+        "Refresh with make live-data."
+    )
+    raise typer.Exit(1)
 
 
 @app.command("cohort-summary")

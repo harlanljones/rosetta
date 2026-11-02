@@ -35,6 +35,10 @@ import pandas as pd
 from rosetta.paths import SNAPSHOT_DIR, ensure_data_dirs
 from rosetta.schema import HITTER_COLUMNS, PITCHER_COLUMNS
 
+#: Output columns: the schema lists plus age provenance (see schema.OPTIONAL_COLUMN_DEFAULTS).
+HITTER_OUT_COLUMNS = [*HITTER_COLUMNS, "age_source"]
+PITCHER_OUT_COLUMNS = [*PITCHER_COLUMNS, "age_source"]
+
 HANGUL_RE = re.compile(r"[\uac00-\ud7af]")
 
 
@@ -269,6 +273,7 @@ def normalize_hitting(
                 "team": romanize_name(str(r.get("팀명", ""))),
                 "role": "batter",
                 "age": float(season - by) if by else 27.0,
+                "age_source": "birth_year" if by else "imputed",
                 "pa": pa,
                 "g": get("G"),
                 "bb_pct": bb_pct,
@@ -289,7 +294,7 @@ def normalize_hitting(
                 "is_synthetic": False,
             }
         )
-    return pd.DataFrame(rows, columns=HITTER_COLUMNS)
+    return pd.DataFrame(rows, columns=HITTER_OUT_COLUMNS)
 
 
 def _parse_ip_kbo(x: str) -> float:
@@ -337,6 +342,7 @@ def normalize_pitching(
                 "team": romanize_name(str(r.get("팀명", ""))),
                 "role": "pitcher",
                 "age": float(season - by) if by else 27.0,
+                "age_source": "birth_year" if by else "imputed",
                 "ip": ip,
                 "g": get("G"),
                 "gs": 0.0,  # not published on leaderboard tables
@@ -354,7 +360,7 @@ def normalize_pitching(
                 "is_synthetic": False,
             }
         )
-    return pd.DataFrame(rows, columns=PITCHER_COLUMNS)
+    return pd.DataFrame(rows, columns=PITCHER_OUT_COLUMNS)
 
 
 def fetch_kbo_season(

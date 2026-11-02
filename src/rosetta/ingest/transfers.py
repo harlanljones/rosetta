@@ -12,7 +12,7 @@ from pathlib import Path
 import pandas as pd
 
 from rosetta.ingest.chadwick import build_id_crosswalk, load_register
-from rosetta.ingest.loaders import load_all_seasons
+from rosetta.ingest.loaders import classify_direction, load_all_seasons, with_direction
 from rosetta.paths import SNAPSHOT_DIR, ensure_data_dirs
 
 LEAGUE_ORDER = ["CUBA", "CPBL", "KBO", "NPB", "AAA", "MLB"]
@@ -31,10 +31,16 @@ def generate_transfers(
       2. Group seasons by (key_uuid, role) — each group is one player.
       3. For players who appear in 2+ different leagues, emit a transfer
          row for each adjacent-season pair.
+
+    KBO foreign players: romanized Hangul names never match Chadwick, so
+    ``<snapshot_dir>/kbo_foreign_map.csv`` (kbo_player_id -> mlbam_id) is
+    applied before Chadwick; see ``chadwick.load_kbo_foreign_map``.
+
+    Every pair carries ``direction`` (export / import / lateral).
     """
     root = Path(snapshot_dir) if snapshot_dir else SNAPSHOT_DIR
     register = load_register(register_path)
-    crosswalk = build_id_crosswalk(register)
+    crosswalk = build_id_crosswalk(register, kbo_foreign_map_path=root / "kbo_foreign_map.csv")
 
     batters = load_all_seasons(role="batter", snapshot_dir=root)
     pitchers = load_all_seasons(role="pitcher", snapshot_dir=root)
@@ -95,6 +101,7 @@ def generate_transfers(
                         "to_season": to_s,
                         "age_from": age_from,
                         "age_to": age_to,
+                        "direction": classify_direction(from_lg, to_lg),
                         "holdout": to_s >= 2023,
                     }
                 )
@@ -126,7 +133,7 @@ def write_transfer_snapshot(
     root = Path(snapshot_dir) if snapshot_dir else SNAPSHOT_DIR
     new_pairs = generate_transfers(register_path, root, max_season_gap=max_season_gap)
     out = Path(out_path) if out_path else root / "transfers.csv"
-    existing = pd.read_csv(out) if out.exists() else pd.DataFrame()
+    existing = with_direction(pd.read_csv(out)) if out.exists() else pd.DataFrame()
     if not existing.empty and not new_pairs.empty:
         combined = pd.concat([existing, new_pairs], ignore_index=True).drop_duplicates(
             ["player_id", "role", "from_league", "to_league", "from_season"]

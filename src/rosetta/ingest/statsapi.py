@@ -105,6 +105,31 @@ def parse_ip(ip: Any) -> float:
         return 0.0
 
 
+def parse_season_spec(spec: str) -> list[int]:
+    """Parse a season spec: "2024", "2022,2024", "2005-2026" or a mix of both.
+
+    Returns sorted unique seasons. Ranges are inclusive. Raises ValueError on
+    anything it cannot read, so CLI callers can report it as a bad option.
+    """
+    seasons: set[int] = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        lo_text, has_dash, hi_text = part.partition("-")
+        try:
+            lo = int(lo_text)
+            hi = int(hi_text) if has_dash else lo
+        except ValueError as exc:
+            raise ValueError(f"bad season {part!r}: use 2024, 2022,2024 or 2005-2026") from exc
+        if hi < lo:
+            raise ValueError(f"season range {part!r} ends before it starts")
+        seasons.update(range(lo, hi + 1))
+    if not seasons:
+        raise ValueError("no seasons given")
+    return sorted(seasons)
+
+
 def _num(stat: dict, *names: str) -> float:
     for n in names:
         v = stat.get(n)

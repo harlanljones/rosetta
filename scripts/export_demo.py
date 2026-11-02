@@ -17,6 +17,7 @@ silently falling back to synthetic fixtures.
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import subprocess
@@ -28,6 +29,10 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 LEADERBOARD_PATH = ROOT / "data" / "outputs" / "leaderboard.json"
 ROLLING_PATH = ROOT / "data" / "outputs" / "historical-rolling" / "historical-rolling.json"
+INTERNATIONAL_DIR = ROOT / "data" / "outputs" / "international-rolling"
+POSTING_CLASS_PATH = ROOT / "data" / "reference" / "posting_class_2026.csv"
+POSTING_CLASS_COLUMNS = ("player_name", "league", "role", "note")
+POSTING_CLASS_ROLES = ("batter", "pitcher")
 
 # Rounding precision by field-name suffix/prefix, applied to every float in
 # the leaderboard/backtest payloads to keep output small and readable.
@@ -144,7 +149,88 @@ def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text())
 
 
-def build_leaderboard(raw: dict[str, Any]) -> dict[str, Any]:
+# Board fields copied onto each posting-class entry (null when not on the board).
+POSTING_CLASS_METRIC_FIELDS = (
+    "woba",
+    "woba_low",
+    "woba_high",
+    "fip",
+    "fip_low",
+    "fip_high",
+    "wrc_plus",
+    "wrc_plus_low",
+    "wrc_plus_high",
+    "fip_minus",
+    "fip_minus_low",
+    "fip_minus_high",
+    "grade",
+    "grade_low",
+    "grade_high",
+    "war",
+    "war_low",
+    "war_high",
+    "dollars",
+    "dollars_low",
+    "dollars_high",
+)
+
+
+def load_posting_class(path: Path = POSTING_CLASS_PATH) -> list[dict[str, str]]:
+    """Read the hand-filled 2026-27 posting class, keeping the file's row order.
+
+    A missing or header-only file gives an empty list, which hides the panel.
+    The header must match ``POSTING_CLASS_COLUMNS`` exactly.
+    """
+    if not path.exists():
+        return []
+    rows: list[dict[str, str]] = []
+    with path.open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        if tuple(reader.fieldnames or ()) != POSTING_CLASS_COLUMNS:
+            raise SystemExit(f"{path}: header must be {','.join(POSTING_CLASS_COLUMNS)}")
+        for raw in reader:
+            row = {column: (raw.get(column) or "").strip() for column in POSTING_CLASS_COLUMNS}
+            if not row["player_name"]:
+                continue
+            if row["role"] not in POSTING_CLASS_ROLES:
+                raise SystemExit(
+                    f"{path}: role {row['role']!r} for {row['player_name']!r} "
+                    f"must be one of {', '.join(POSTING_CLASS_ROLES)}"
+                )
+            rows.append(row)
+    return rows
+
+
+def _attach_board_metrics(
+    posting_class: list[dict[str, str]], boards: dict[str, list[dict[str, Any]]]
+) -> list[dict[str, Any]]:
+    """Keep file order; copy grade-family metrics from the matching board row by name and role."""
+    out: list[dict[str, Any]] = []
+    for entry in posting_class:
+        wanted = entry["player_name"].casefold()
+        match = next(
+            (
+                row for row in boards.get(entry["role"], [])
+                if str(row.get("player_name", "")).strip().casefold() == wanted
+            ),
+            None,
+        )
+        record: dict[str, Any] = {
+            "player_name": entry["player_name"],
+            "league": entry["league"],
+            "role": entry["role"],
+            "note": entry["note"],
+            "on_board": match is not None,
+        }
+        for field in POSTING_CLASS_METRIC_FIELDS:
+            record[field] = match.get(field) if match is not None else None
+        out.append(record)
+    return out
+
+
+def build_leaderboard(
+    raw: dict[str, Any], posting_class: list[dict[str, str]] | None = None
+) -> dict[str, Any]:
     data_mode = raw.get("data_mode")
     if data_mode != "real":
         raise SystemExit(
@@ -197,6 +283,22 @@ def build_leaderboard(raw: dict[str, Any]) -> dict[str, Any]:
         "mle_fip",
         "mle_fip_low",
         "mle_fip_high",
+        "position",
+        "wrc_plus",
+        "wrc_plus_low",
+        "wrc_plus_high",
+        "fip_minus",
+        "fip_minus_low",
+        "fip_minus_high",
+        "grade",
+        "grade_low",
+        "grade_high",
+        "war",
+        "war_low",
+        "war_high",
+        "dollars",
+        "dollars_low",
+        "dollars_high",
     )
     zero_synthetic_checked = 0
     for role, rows in sorted(raw.get("boards", {}).items()):
@@ -223,11 +325,58 @@ def build_leaderboard(raw: dict[str, Any]) -> dict[str, Any]:
         "data_mode": data_mode,
         "source_counts": raw.get("source_counts", {}),
         "boards": boards_out,
+        "posting_class": _attach_board_metrics(posting_class or [], boards_out),
     }
 
 
+INTERNATIONAL_GATE_STATS = (("batter", "woba"), ("pitcher", "fip"))
+
+
+def load_international_validation(
+    directory: Path = INTERNATIONAL_DIR,
+) -> list[dict[str, Any]] | None:
+    """Compact pooled NPB/KBO validation rows from ``international-rolling-*.json``.
+
+    One row per league x gated stat (batter wOBA, pitcher FIP) with n, MAE,
+    baseline MAE, 80% coverage and the league's ship-gate verdict. Returns None
+    when no real-data international artifact exists, so the bundle omits the key.
+    """
+    if not directory.is_dir():
+        return None
+    rows: list[dict[str, Any]] = []
+    for path in sorted(directory.glob("international-rolling-*.json")):
+        payload = load_json(path)
+        meta = payload.get("metadata", {})
+        if meta.get("data_mode") != "real":
+            continue
+        league = meta.get("league")
+        verdict = payload.get("gate", {}).get("verdict")
+        for role, stat in INTERNATIONAL_GATE_STATS:
+            match = next(
+                (m for m in payload.get("pooled", []) if m.get("role") == role and m.get("stat") == stat),
+                None,
+            )
+            if match is None:
+                continue
+            row = {
+                "league": league,
+                "role": role,
+                "stat": stat,
+                "n": match.get("n"),
+                "mae": match.get("mae"),
+                "baseline_mae": match.get("baseline_mae"),
+                "coverage_80": match.get("coverage_80"),
+                "gate": verdict,
+            }
+            rows.append(_round_metric_record(row))
+    return rows or None
+
+
 def build_backtest(
-    backtest_raw: dict[str, Any], rolling_raw: dict[str, Any], target_season: int
+    backtest_raw: dict[str, Any],
+    rolling_raw: dict[str, Any],
+    target_season: int,
+    international_validation: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     metadata = backtest_raw.get("metadata", {})
     if metadata.get("data_mode") != "real":
@@ -304,7 +453,7 @@ def build_backtest(
         and metric.get("baseline_mae") is not None
         and metric["mae"] < metric["baseline_mae"]
     )
-    return {
+    bundle = {
         "data_mode": "real",
         f"target_season_{target_season}": {
             "metrics": metrics,
@@ -326,6 +475,9 @@ def build_backtest(
         },
         "player_predictions": player_rows,
     }
+    if international_validation:
+        bundle["international_validation"] = international_validation
+    return bundle
 
 
 def _analysis_row(row: dict[str, Any], target_season: int) -> dict[str, Any]:
@@ -624,6 +776,12 @@ def main() -> None:
         default=ROOT / "data" / "outputs" / "demo",
         help="Output directory for the exported demo bundle.",
     )
+    parser.add_argument(
+        "--posting-class",
+        type=Path,
+        default=POSTING_CLASS_PATH,
+        help="Hand-filled 2026-27 posting class CSV (header-only means no panel).",
+    )
     args = parser.parse_args()
 
     backtest_path = ROOT / "data" / "outputs" / f"historical-backtest-{args.target_season}" / "historical-backtest.json"
@@ -636,8 +794,14 @@ def main() -> None:
     out_dir: Path = args.out
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    leaderboard_out = build_leaderboard(leaderboard_raw)
-    backtest_out = build_backtest(backtest_raw, rolling_raw, args.target_season)
+    posting_class = load_posting_class(args.posting_class)
+    leaderboard_out = build_leaderboard(leaderboard_raw, posting_class=posting_class)
+    backtest_out = build_backtest(
+        backtest_raw,
+        rolling_raw,
+        args.target_season,
+        international_validation=load_international_validation(),
+    )
     analysis_out = build_analysis(rolling_raw)
     meta_out = build_meta(
         leaderboard_raw,
@@ -660,7 +824,8 @@ def main() -> None:
         f"[export_demo] wrote {out_dir} "
         f"({total_bytes:,} bytes total; leaderboard {n_batter}B/{n_pitcher}P rows; "
         f"backtest players {n_woba_players} wOBA / {n_fip_players} FIP; "
-        f"analysis rows {analysis_out['scope']['player_stat_rows']})"
+        f"analysis rows {analysis_out['scope']['player_stat_rows']}; "
+        f"posting class {len(leaderboard_out['posting_class'])})"
     )
 
 

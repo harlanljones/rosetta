@@ -14,6 +14,41 @@ from rosetta.schema import (
     validate_pitcher_frame,
 )
 
+INTERNATIONAL_LEAGUES = frozenset({"NPB", "KBO", "CPBL", "CUBA"})
+NORTH_AMERICAN_LEAGUES = frozenset({"AAA", "MLB"})
+
+
+def classify_direction(from_league: object, to_league: object) -> str:
+    """Direction of a transfer pair: ``export``, ``import`` or ``lateral``.
+
+    ``export``: NPB/KBO/CPBL/CUBA -> AAA/MLB. ``import``: AAA/MLB ->
+    NPB/KBO/CPBL/CUBA. Everything else (e.g. AAA->MLB, NPB->KBO) is
+    ``lateral``.
+    """
+    frm, to = str(from_league), str(to_league)
+    if frm in INTERNATIONAL_LEAGUES and to in NORTH_AMERICAN_LEAGUES:
+        return "export"
+    if frm in NORTH_AMERICAN_LEAGUES and to in INTERNATIONAL_LEAGUES:
+        return "import"
+    return "lateral"
+
+
+def with_direction(df: pd.DataFrame) -> pd.DataFrame:
+    """Return ``df`` with a filled ``direction`` column (derived when absent/blank)."""
+    out = df.copy()
+    derived = pd.Series(
+        [classify_direction(a, b) for a, b in zip(out["from_league"], out["to_league"], strict=True)],
+        index=out.index,
+        dtype=object,
+    )
+    if "direction" in out.columns:
+        existing = out["direction"].astype("object")
+        blank = existing.isna() | (existing.astype(str).str.strip() == "")
+        out["direction"] = existing.where(~blank, derived)
+    else:
+        out["direction"] = derived
+    return out
+
 
 def _read_csv(path: Path) -> pd.DataFrame:
     if not path.exists():
@@ -77,4 +112,4 @@ def load_transfers(snapshot_dir: Path | None = None) -> pd.DataFrame:
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"transfers.csv missing columns: {sorted(missing)}")
-    return df
+    return with_direction(df)

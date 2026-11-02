@@ -64,6 +64,15 @@ class SeasonLine(BaseModel):
     road_woba: float | None = None
     home_era: float | None = None
     road_era: float | None = None
+    # Age provenance: "birth_year" when scraped, "imputed" when defaulted
+    age_source: str = ""
+    # Fielding (primary position + counting stats; filled by fielding ingest)
+    position: str = ""
+    def_games: float | None = None
+    def_inn: float | None = None
+    def_po: float | None = None
+    def_a: float | None = None
+    def_e: float | None = None
     # Metadata
     park_id: str = ""
     source: str = "snapshot"
@@ -124,19 +133,46 @@ PITCHER_COLUMNS: list[str] = [
 ]
 
 
+#: Optional columns added for the 2026-27 offseason update. Older snapshots
+#: lack them; validators fill these defaults so every frame has them.
+OPTIONAL_COLUMN_DEFAULTS: dict[str, object] = {
+    "age_source": "",
+    "position": "",
+    "def_games": float("nan"),
+    "def_inn": float("nan"),
+    "def_po": float("nan"),
+    "def_a": float("nan"),
+    "def_e": float("nan"),
+}
+
+#: Optional transfers.csv column: "export" (NPB/KBO/CPBL/CUBA -> AAA/MLB),
+#: "import" (AAA/MLB -> NPB/KBO/CPBL/CUBA) or "lateral".
+TRANSFER_DIRECTION_COLUMN = "direction"
+
+
+def _with_optional(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    for col, default in OPTIONAL_COLUMN_DEFAULTS.items():
+        if col not in out.columns:
+            out[col] = default
+    out["age_source"] = out["age_source"].fillna("").astype(str)
+    out["position"] = out["position"].fillna("").astype(str)
+    return out
+
+
 def empty_hitter_frame() -> pd.DataFrame:
-    return pd.DataFrame(columns=HITTER_COLUMNS)
+    return pd.DataFrame(columns=HITTER_COLUMNS + list(OPTIONAL_COLUMN_DEFAULTS))
 
 
 def empty_pitcher_frame() -> pd.DataFrame:
-    return pd.DataFrame(columns=PITCHER_COLUMNS)
+    return pd.DataFrame(columns=PITCHER_COLUMNS + list(OPTIONAL_COLUMN_DEFAULTS))
 
 
 def validate_hitter_frame(df: pd.DataFrame) -> pd.DataFrame:
     missing = [c for c in HITTER_COLUMNS if c not in df.columns]
     if missing:
         raise ValueError(f"hitter frame missing columns: {missing}")
-    out = df[HITTER_COLUMNS].copy()
+    out = _with_optional(df)[HITTER_COLUMNS + list(OPTIONAL_COLUMN_DEFAULTS)].copy()
     out["role"] = "batter"
     return out
 
@@ -145,7 +181,7 @@ def validate_pitcher_frame(df: pd.DataFrame) -> pd.DataFrame:
     missing = [c for c in PITCHER_COLUMNS if c not in df.columns]
     if missing:
         raise ValueError(f"pitcher frame missing columns: {missing}")
-    out = df[PITCHER_COLUMNS].copy()
+    out = _with_optional(df)[PITCHER_COLUMNS + list(OPTIONAL_COLUMN_DEFAULTS)].copy()
     out["role"] = "pitcher"
     return out
 
@@ -171,6 +207,23 @@ class TranslationResult(BaseModel):
     fip: float | None = None
     fip_low: float | None = None
     fip_high: float | None = None
+    # Grades (filled only when reference constants are supplied)
+    position: str | None = None
+    wrc_plus: float | None = None
+    wrc_plus_low: float | None = None
+    wrc_plus_high: float | None = None
+    fip_minus: float | None = None
+    fip_minus_low: float | None = None
+    fip_minus_high: float | None = None
+    grade: float | None = None
+    grade_low: float | None = None
+    grade_high: float | None = None
+    war: float | None = None
+    war_low: float | None = None
+    war_high: float | None = None
+    dollars: float | None = None
+    dollars_low: float | None = None
+    dollars_high: float | None = None
     sample_pa: float = 0.0
     sample_ip: float = 0.0
     n_movers_path: int = 0
