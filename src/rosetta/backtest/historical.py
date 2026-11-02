@@ -9,6 +9,7 @@ season pairs directly from the normalized season snapshots.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from pathlib import Path
 from typing import Any
@@ -16,8 +17,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from rosetta.cohort.builder import pair_seasons
 from rosetta.ingest.chadwick import build_id_crosswalk, load_register
-from rosetta.ingest.loaders import load_all_seasons
+from rosetta.ingest.loaders import load_all_seasons, load_transfers
 from rosetta.models.factors import (
     HITTER_STATS,
     LEAGUE_ERA_FLOOR,
@@ -25,6 +27,7 @@ from rosetta.models.factors import (
     apply_era_floor,
     fit_factor_model,
 )
+from rosetta.models.park import load_runs_park_factors, lookup_runs_park_factor
 from rosetta.paths import SNAPSHOT_DIR
 from rosetta.translate.api import translate_line
 
@@ -132,8 +135,14 @@ def _pair_rows(
     min_ip: float,
     role: str,
     id_crosswalk: dict[str, str] | None = None,
+    include_team: bool = False,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Build adjacent from_league(s-1)->to_league(s) pairs through target."""
+    """Build adjacent from_league(s-1)->to_league(s) pairs through target.
+
+    ``include_team`` adds ``pre_team`` (the source line's team) to each row so
+    callers can look up a team-season park factor; it is off for the AAA->MLB
+    backtest, whose rows and outputs stay exactly as before.
+    """
     if source.empty or target.empty:
         return [], 0
     stats = HITTER_STATS if role == "batter" else PITCHER_STATS
@@ -212,6 +221,8 @@ def _pair_rows(
             "pre_sample": float(pre_sample),
             "post_sample": float(post_sample),
         }
+        if include_team:
+            row["pre_team"] = str(pre.get("team", "") or "")
         for stat in stats:
             row[f"pre_{stat}"] = float(pre[stat])
             row[f"post_{stat}"] = float(post[stat])
@@ -705,3 +716,535 @@ def run_rolling_backtest(
         "summary": summary,
         "pooled": pooled,
     }
+
+
+# --------------------------------------------------------------------------
+# International (NPB / KBO -> MLB) rolling validation
+# --------------------------------------------------------------------------
+
+INTERNATIONAL_EVAL_LEAGUES = ("NPB", "KBO")
+#: Headline stats the ship gate is judged on: (role, stat).
+GATE_STATS: tuple[tuple[str, str], ...] = (("batter", "woba"), ("pitcher", "fip"))
+GATE_MIN_N = 10
+GATE_COVERAGE_RANGE = (0.70, 0.90)
+_LINK_STATS = {"batter": "woba", "pitcher": "fip"}
+_ROUND_LINK_FIELDS = ("factor", "low", "high", "raw_factor", "direction_gap")
+
+
+_CROSSWALK_CACHE: dict[tuple[str, int, int], dict[str, str]] = {}
+
+
+def _cached_crosswalk(root: Path) -> dict[str, str] | None:
+    """Chadwick id crosswalk for ``root`` (None without a register), memoized per file state.
+
+    Building it walks the whole register row by row (minutes on the full file),
+    so the international run builds it once and shares it between cohort
+    assembly and evaluation pairing.
+    """
+    path = root / "chadwick_people.csv"
+    if not path.exists():
+        return None
+    stat = path.stat()
+    key = (str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+    if key not in _CROSSWALK_CACHE:
+        _CROSSWALK_CACHE.clear()
+        _CROSSWALK_CACHE[key] = build_id_crosswalk(
+            load_register(path), kbo_foreign_map_path=root / "kbo_foreign_map.csv"
+        )
+    return _CROSSWALK_CACHE[key]
+
+
+def _transfer_cohort(
+    root: Path, crosswalk: dict[str, str] | None, park_factors: pd.DataFrame,
+    *, min_pa: float, min_ip: float,
+) -> pd.DataFrame:
+    """The `build_cohort` cohort (same pairing, park handling and thresholds) with a shared crosswalk."""
+    paired = pair_seasons(
+        load_transfers(root),
+        load_all_seasons(role="batter", snapshot_dir=root),
+        load_all_seasons(role="pitcher", snapshot_dir=root),
+        id_crosswalk=crosswalk,
+        park_factors=park_factors,
+    )
+    if paired.empty:
+        return paired
+    keep = pd.Series(False, index=paired.index)
+    batter = paired["role"] == "batter"
+    keep |= batter & (paired["pre_pa"] >= min_pa) & (paired["post_pa"] >= min_pa)
+    if "pre_ip" in paired.columns and "post_ip" in paired.columns:
+        keep |= (~batter) & (paired["pre_ip"] >= min_ip) & (paired["post_ip"] >= min_ip)
+    return paired.loc[keep].reset_index(drop=True)
+
+
+def international_ship_gate(pooled: list[dict[str, Any]]) -> dict[str, Any]:
+    """Ship gate on the pooled international result.
+
+    PASS: for batter wOBA and pitcher FIP, model MAE < baseline MAE and 80%
+    coverage inside ``GATE_COVERAGE_RANGE``. FAIL lists the failing rows.
+    INSUFFICIENT when any gated stat has fewer than ``GATE_MIN_N`` scored rows
+    (or none): too few exports to judge, which takes precedence over FAIL.
+    """
+    lo, hi = GATE_COVERAGE_RANGE
+    rows: list[dict[str, Any]] = []
+    for role, stat in GATE_STATS:
+        match = next((r for r in pooled if r["role"] == role and r["stat"] == stat), None)
+        n = int(match["n"]) if match else 0
+        row: dict[str, Any] = {"role": role, "stat": stat, "n": n}
+        if match is None or n < GATE_MIN_N:
+            row.update(status="INSUFFICIENT", reasons=[f"n={n} < {GATE_MIN_N}"])
+            rows.append(row)
+            continue
+        mae, base, cov = float(match["mae"]), float(match["baseline_mae"]), float(match["coverage_80"])
+        reasons: list[str] = []
+        if not mae < base:
+            reasons.append(f"MAE {mae:.4f} does not beat baseline {base:.4f}")
+        if not lo <= cov <= hi:
+            reasons.append(f"80% coverage {cov:.3f} outside [{lo:.2f}, {hi:.2f}]")
+        row.update(
+            mae=mae, baseline_mae=base, coverage_80=cov,
+            status="FAIL" if reasons else "PASS", reasons=reasons,
+        )
+        rows.append(row)
+    statuses = {r["status"] for r in rows}
+    verdict = "INSUFFICIENT" if "INSUFFICIENT" in statuses else "FAIL" if "FAIL" in statuses else "PASS"
+    return {
+        "verdict": verdict,
+        "criteria": {"min_n": GATE_MIN_N, "coverage_range": [lo, hi], "stats": [list(x) for x in GATE_STATS]},
+        "rows": rows,
+        "failing": [r for r in rows if r["status"] != "PASS"],
+    }
+
+
+def _link_report(
+    model: Any, *, league: str, target_season: int
+) -> list[dict[str, Any]]:
+    """Pooled factor, counts and direction gap for league->MLB and league->AAA."""
+    out: list[dict[str, Any]] = []
+    for dest in ("MLB", "AAA"):
+        key = f"{league}->{dest}"
+        for role, stat in _LINK_STATS.items():
+            node = model.links.get(role, {}).get(key, {}).get(stat) or {}
+            row: dict[str, Any] = {
+                "target_season": target_season, "link": key, "role": role, "stat": stat,
+                "fitted": bool(node), "n": int(node.get("n", 0) or 0),
+                "n_export": int(node.get("n_export", 0) or 0),
+                "n_import": int(node.get("n_import", 0) or 0),
+                "thin": bool(node.get("thin", False)),
+            }
+            for field in _ROUND_LINK_FIELDS:
+                value = node.get(field)
+                row[field] = float(value) if value is not None and _finite(value) else None
+            out.append(row)
+    return out
+
+
+def _path_fitted(model: Any, role: str, league: str, stats: tuple[str, ...]) -> str | None:
+    """Reason string when a scored stat has an unfitted link on the league->MLB path."""
+    path = model.path(league, "MLB")
+    for a, b in zip(path[:-1], path[1:], strict=False):
+        node = model.links.get(role, {}).get(model.link_key(a, b), {})
+        missing = [s for s in stats if float(node.get(s, {}).get("n", 0.0) or 0.0) <= 0]
+        if missing:
+            return f"{role}: no fitted {a}->{b} link for {', '.join(missing)}"
+    return None
+
+
+def run_international_rolling(
+    snapshot_dir: Path | str | None = None,
+    *,
+    league: str,
+    target_seasons: list[int] | tuple[int, ...],
+    n_boot: int = 250,
+    seed: int = 42,
+    min_pa: float = 80.0,
+    min_ip: float = 30.0,
+    estimator: str = "ratio_of_means",
+) -> dict[str, Any]:
+    """Rolling validation of NPB/KBO -> MLB translation on exports.
+
+    For each target season T the factor model is refit on the full transferred
+    cohort (both directions, every league, built by `build_cohort`) restricted
+    to ``to_season < T``; international links pool across directions inside
+    `fit_factor_model`.  Evaluation rows are exports: players with a real
+    ``league`` line in T-1 and a real MLB line in T, both above the playing-time
+    thresholds.  The MLB-T line is scored against ``translate_line`` of the T-1
+    line (with runs park factors when game logs exist); the baseline carries the
+    foreign rate forward untouched.  A target with no usable exports is recorded
+    in ``metadata["skipped"]`` rather than raised.
+    """
+    league = str(league).strip().upper()
+    if league not in INTERNATIONAL_EVAL_LEAGUES:
+        raise ValueError(f"league must be one of {INTERNATIONAL_EVAL_LEAGUES}, got {league!r}")
+    seasons = sorted({int(season) for season in target_seasons})
+    if not seasons:
+        raise ValueError("target_seasons must be non-empty")
+    _validate_parameters(seasons[-1], n_boot, seed, min_pa, min_ip)
+    n_boot, seed = int(n_boot), int(seed)
+    min_pa, min_ip = float(min_pa), float(min_ip)
+    root = Path(snapshot_dir) if snapshot_dir is not None else SNAPSHOT_DIR
+    last = seasons[-1]
+
+    crosswalk = _cached_crosswalk(root)
+    park_factors = load_runs_park_factors(root)
+    cohort = _transfer_cohort(root, crosswalk, park_factors, min_pa=min_pa, min_ip=min_ip)
+
+    checksums: dict[str, str] = {}
+    by_role: dict[str, dict[str, pd.DataFrame]] = {}
+    source_counts: dict[str, int] = {league: 0, "MLB": 0}
+    for role in _ROLES:
+        by_role[role] = {}
+        for lg in (league, "MLB"):
+            path = root / f"{lg.lower()}_{role}s.csv"
+            if path.exists():
+                checksums[path.name] = _sha256(path)
+            loaded = load_all_seasons(role=role, snapshot_dir=root, leagues=[lg])
+            prepared = _prepare(loaded, league=lg, target_season=last, role=role)
+            by_role[role][lg] = prepared
+            source_counts[lg] += int(len(prepared))
+
+    by_target: dict[str, Any] = {}
+    skipped: list[dict[str, Any]] = []
+    all_detail: list[dict[str, Any]] = []
+    summary: list[dict[str, Any]] = []
+    link_rows: list[dict[str, Any]] = []
+
+    for season in seasons:
+        if cohort.empty:
+            skipped.append({"target_season": season, "role": None, "reason": "no transferred-player cohort"})
+            continue
+        train = cohort.loc[cohort["to_season"] < season].copy()
+        train["holdout"] = False
+        if train.empty:
+            skipped.append(
+                {"target_season": season, "role": None, "reason": f"no training pairs with to_season < {season}"}
+            )
+            continue
+
+        eval_rows: list[dict[str, Any]] = []
+        candidates = 0
+        for role in _ROLES:
+            source = by_role[role][league]
+            target = by_role[role]["MLB"]
+            rows, count = _pair_rows(
+                source.loc[source["season"] == season - 1],
+                target.loc[target["season"] == season],
+                from_league=league, to_league="MLB", target_season=season,
+                min_pa=min_pa, min_ip=min_ip, role=role, id_crosswalk=crosswalk,
+                include_team=True,
+            )
+            eval_rows.extend(rows)
+            candidates += count
+        if not eval_rows:
+            skipped.append(
+                {
+                    "target_season": season, "role": None,
+                    "reason": f"no {league} {season - 1} -> MLB {season} exports above the playing-time thresholds",
+                }
+            )
+            continue
+
+        model = fit_factor_model(train, n_boot=n_boot, seed=seed, estimator=estimator)
+        links = _link_report(model, league=league, target_season=season)
+
+        details: list[dict[str, Any]] = []
+        park_applied = 0
+        scored_roles: set[str] = set()
+        for role in _ROLES:
+            role_rows = [row for row in eval_rows if row["role"] == role]
+            if not role_rows:
+                continue
+            stats = HITTER_STATS if role == "batter" else PITCHER_STATS
+            reason = _path_fitted(model, role, league, stats)
+            if reason is not None:
+                skipped.append({"target_season": season, "role": role, "reason": reason})
+                continue
+            scored_roles.add(role)
+            for row in role_rows:
+                pre = {
+                    "player_id": row["player_id"], "player_name": row["player_name"],
+                    "season": row["from_season"], "league": league, "role": role,
+                    "team": row["pre_team"], "age": row["age_from"],
+                    "pa": row["pre_sample"] if role == "batter" else 0.0,
+                    "ip": row["pre_sample"] if role == "pitcher" else 0.0,
+                }
+                pre.update({stat: row[f"pre_{stat}"] for stat in stats})
+                if lookup_runs_park_factor(park_factors, league, row["pre_team"], row["from_season"]) is not None:
+                    park_applied += 1
+                translated = translate_line(
+                    pre, model=model, from_league=league, to_league="MLB", park_factors=park_factors
+                )
+                for stat in stats:
+                    prediction = float(translated.rates[stat])
+                    actual = float(row[f"post_{stat}"])
+                    lower, upper = float(translated.lower[stat]), float(translated.upper[stat])
+                    if not all(_finite(value) for value in (prediction, actual, lower, upper)):
+                        raise ValueError(
+                            f"non-finite prediction/interval for {row['player_id']} {role} {stat}"
+                        )
+                    details.append(
+                        {
+                            "league": league, "target_season": season,
+                            "player_id": row["player_id"], "player_name": row["player_name"],
+                            "role": role, "from_season": row["from_season"], "to_season": row["to_season"],
+                            "pre_team": row["pre_team"],
+                            "pre_sample": row["pre_sample"], "post_sample": row["post_sample"],
+                            "stat": stat, "prior": row[f"pre_{stat}"], "prediction": prediction,
+                            "actual": actual, "error": prediction - actual,
+                            "absolute_error": abs(prediction - actual),
+                            "lower": lower, "upper": upper,
+                            "covered_80": bool(lower <= actual <= upper),
+                        }
+                    )
+        if not details:
+            continue
+        metrics = _score_metrics(details)
+        by_target[str(season)] = {
+            "counts": {
+                "training_pairs": int(len(train)),
+                "candidate_adjacent_pairs": candidates,
+                "evaluation_pairs": len(eval_rows),
+                "detail_rows": len(details),
+                "park_adjusted_pairs": park_applied,
+                "scored_roles": sorted(scored_roles),
+            },
+            "latest_training_to_season": int(train["to_season"].max()),
+            "metrics": metrics,
+            "links": links,
+            "detail": details,
+        }
+        all_detail.extend(details)
+        summary.extend({"target_season": season, **row} for row in metrics)
+        link_rows.extend(links)
+
+    pooled = [{"league": league, **row} for row in _score_metrics(all_detail)]
+    gate = international_ship_gate(pooled)
+    metadata = {
+        "data_mode": "real",
+        "league": league,
+        "link": f"{league}->MLB",
+        "target_seasons": seasons,
+        "training_cutoff": {"destination_season_lt": "target season"},
+        "parameters": {
+            "n_boot": n_boot, "seed": seed, "min_pa": min_pa, "min_ip": min_ip,
+            "estimator": str(estimator),
+        },
+        "counts": {
+            "real_lines": source_counts,
+            "targets_scored": len(by_target),
+            "targets_skipped": len({item["target_season"] for item in skipped} - {int(k) for k in by_target}),
+            "detail_rows": len(all_detail),
+            "park_adjusted_pairs": sum(t["counts"]["park_adjusted_pairs"] for t in by_target.values()),
+            "cohort_pairs": int(len(cohort)),
+        },
+        "input_sha256": checksums,
+        "skipped": skipped,
+        "crosswalk": "chadwick" if crosswalk else "exact ids only",
+        "error_definition": "prediction minus actual",
+        "baseline": "carry-forward foreign rate",
+    }
+    return {
+        "metadata": metadata,
+        "gate": gate,
+        "pooled": pooled,
+        "summary": summary,
+        "links": link_rows,
+        "by_target": by_target,
+    }
+
+
+def _fmt(value: Any, digits: int = 4) -> str:
+    return f"{float(value):.{digits}f}" if value is not None and _finite(value) else "n/a"
+
+
+def _metric_table(rows: list[dict[str, Any]], *, with_target: bool = False) -> list[str]:
+    columns = (["target"] if with_target else []) + [
+        "role", "stat", "n", "MAE", "baseline MAE", "80% coverage",
+    ]
+    lines = ["| " + " | ".join(columns) + " |", "|" + "---|" * len(columns)]
+    for row in rows:
+        digits = 3 if row["stat"] in {"fip", "era"} else 4
+        cells = ([str(row["target_season"])] if with_target else []) + [
+            str(row["role"]), str(row["stat"]), str(row["n"]),
+            _fmt(row["mae"], digits), _fmt(row["baseline_mae"], digits),
+            f"{float(row['coverage_80']) * 100:.1f}%",
+        ]
+        lines.append("| " + " | ".join(cells) + " |")
+    return lines
+
+
+def _link_table(rows: list[dict[str, Any]]) -> list[str]:
+    lines = [
+        "| target | link | role | stat | pooled factor | n | n_export | n_import | direction_gap |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
+    for row in rows:
+        lines.append(
+            f"| {row['target_season']} | {row['link']} | {row['role']} | {row['stat']} | "
+            f"{_fmt(row['factor'], 3)} | {row['n']} | {row['n_export']} | {row['n_import']} | "
+            f"{_fmt(row['direction_gap'], 3)} |"
+        )
+    return lines
+
+
+def render_international_markdown(payload: dict[str, Any]) -> str:
+    """Readable report for one `run_international_rolling` payload."""
+    meta = payload["metadata"]
+    gate = payload["gate"]
+    league = meta["league"]
+    lines = [
+        f"# {league} -> MLB international rolling validation",
+        "",
+        f"Targets: {', '.join(str(s) for s in meta['target_seasons'])}. Baseline: {meta['baseline']}. "
+        f"Estimator {meta['parameters']['estimator']}, n_boot {meta['parameters']['n_boot']}, "
+        f"seed {meta['parameters']['seed']}, min PA {meta['parameters']['min_pa']:g}, "
+        f"min IP {meta['parameters']['min_ip']:g}. Error = prediction minus actual.",
+        "",
+        f"## Ship gate: {gate['verdict']}",
+        "",
+        "PASS needs model MAE < baseline MAE and 80% coverage in "
+        f"[{gate['criteria']['coverage_range'][0]:.2f}, {gate['criteria']['coverage_range'][1]:.2f}] "
+        f"for batter wOBA and pitcher FIP; INSUFFICIENT when n < {gate['criteria']['min_n']}.",
+        "",
+    ]
+    for row in gate["rows"]:
+        detail = "; ".join(row["reasons"]) if row["reasons"] else "model beats baseline, coverage in range"
+        lines.append(f"- {row['role']} {row['stat']} (n={row['n']}): {row['status']} - {detail}")
+    lines += ["", "## Pooled metrics", ""]
+    lines += _metric_table(payload["pooled"]) if payload["pooled"] else ["No scored exports."]
+    lines += ["", "## Per-target metrics", ""]
+    lines += _metric_table(payload["summary"], with_target=True) if payload["summary"] else ["None."]
+    lines += ["", "## Pooled link factors and direction gap", ""]
+    lines += _link_table(payload["links"]) if payload["links"] else ["None."]
+    if meta["skipped"]:
+        lines += ["", "## Skipped", ""]
+        for item in meta["skipped"]:
+            role = f" ({item['role']})" if item.get("role") else ""
+            lines.append(f"- {item['target_season']}{role}: {item['reason']}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def write_international_report(payload: dict[str, Any], out_dir: Path | str) -> dict[str, Path]:
+    """Write ``international-rolling-<league>.json`` and ``.md`` into ``out_dir``."""
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    stem = f"international-rolling-{payload['metadata']['league'].lower()}"
+    json_path, md_path = out / f"{stem}.json", out / f"{stem}.md"
+    json_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    md_path.write_text(render_international_markdown(payload))
+    return {"json": json_path, "markdown": md_path}
+
+
+def render_international_doc(payloads: list[dict[str, Any]]) -> str:
+    """Concise results doc for one or more `run_international_rolling` payloads.
+
+    Every number comes from the payloads; only the limitations prose is fixed
+    text (with counts interpolated where the payload has them).
+    """
+    if not payloads:
+        raise ValueError("at least one international-rolling payload is required")
+    payloads = sorted(payloads, key=lambda p: p["metadata"]["league"])
+    first = payloads[0]["metadata"]
+    params = first["parameters"]
+    seasons = first["target_seasons"]
+    lines = [
+        "# International backtest results (NPB and KBO to MLB)",
+        "",
+        "Generated by `rosetta international-rolling`; the numbers below are copied from its JSON "
+        "output, do not edit them by hand. Regenerate after any snapshot, factor-model or "
+        "park-factor change.",
+        "",
+        "## What was run",
+        "",
+        f"- Command: `rosetta international-rolling --league <NPB|KBO> --targets {seasons[0]}-{seasons[-1]} "
+        f"--boot {params['n_boot']}` (seed {params['seed']}, estimator {params['estimator']}, "
+        f"minimum {params['min_pa']:g} PA / {params['min_ip']:g} IP on both sides).",
+        "- For each target season T the factor model is refit on every transferred-player pair "
+        "(both directions, all leagues) with `to_season < T`. NPB and KBO links are pooled across "
+        "directions with a direction term and shrink toward the chained AAA product.",
+        "- Scored set: exports, meaning players with a real league season in T-1 and a real MLB "
+        "season in T. The MLB-T line is compared with `translate_line` of the T-1 line.",
+        "- Baseline: the T-1 foreign rate carried forward unchanged. Error is prediction minus actual. "
+        "Coverage is the share of actual outcomes inside the model's 80% band.",
+        f"- Crosswalk: {first['crosswalk']}. Targets with no exports are recorded as skipped.",
+        "",
+        "## Ship gate",
+        "",
+        "PASS needs model MAE below baseline MAE and 80% coverage in "
+        f"[{GATE_COVERAGE_RANGE[0]:.2f}, {GATE_COVERAGE_RANGE[1]:.2f}] for batter wOBA and pitcher FIP "
+        f"on the pooled result. INSUFFICIENT when a gated stat has fewer than {GATE_MIN_N} scored rows.",
+        "",
+        "| league | verdict | batter wOBA (n) | pitcher FIP (n) | failing or insufficient |",
+        "|---|---|---|---|---|",
+    ]
+    for payload in payloads:
+        gate = payload["gate"]
+        by_stat = {(r["role"], r["stat"]): r for r in gate["rows"]}
+        bat, pit = by_stat[("batter", "woba")], by_stat[("pitcher", "fip")]
+        why = "; ".join(f"{r['role']} {r['stat']}: {', '.join(r['reasons'])}" for r in gate["failing"]) or "none"
+        lines.append(
+            f"| {payload['metadata']['league']} | {gate['verdict']} | {bat['status']} ({bat['n']}) | "
+            f"{pit['status']} ({pit['n']}) | {why} |"
+        )
+
+    for payload in payloads:
+        meta = payload["metadata"]
+        league = meta["league"]
+        lines += ["", f"## {league}", "", f"### Pooled metrics, {league} exports", ""]
+        lines += _metric_table(payload["pooled"]) if payload["pooled"] else ["No scored exports."]
+        headline = [r for r in payload["summary"] if r["stat"] in {"woba", "fip"}]
+        if headline:
+            lines += ["", f"### Per-target wOBA and FIP, {league}", ""]
+            lines += _metric_table(headline, with_target=True)
+        if payload["links"]:
+            lines += ["", f"### Pooled link factors and direction gap, {league}", ""]
+            lines += [
+                "`direction_gap` is log(export factor / import factor) in the "
+                f"{league}->destination orientation; blank when one side has no usable rows.",
+                "",
+            ]
+            lines += _link_table(payload["links"])
+        if meta["skipped"]:
+            lines += ["", f"### Skipped, {league}", ""]
+            lines += [
+                f"- {i['target_season']}{' (' + i['role'] + ')' if i.get('role') else ''}: {i['reason']}"
+                for i in meta["skipped"]
+            ]
+
+    park_pairs = sum(p["metadata"]["counts"]["park_adjusted_pairs"] for p in payloads)
+    lines += [
+        "",
+        "## Limitations",
+        "",
+        "- Thin samples. Exports with both-side playing time are few, and KBO movers are rarer "
+        "still; read the n column before the MAE column. A small pooled n makes both the MAE "
+        "comparison and the coverage figure noisy, and the gate marks it INSUFFICIENT rather than "
+        "guessing.",
+        "- Snapshot coverage is partial. Real lines in the snapshots (batters plus pitchers, all "
+        "seasons): "
+        + ", ".join(
+            f"{p['metadata']['league']} {p['metadata']['counts']['real_lines'][p['metadata']['league']]}"
+            for p in payloads
+        )
+        + f", MLB {payloads[0]['metadata']['counts']['real_lines']['MLB']}. NPB and KBO seasons "
+        "hold only the players the ingest kept, so exports missing from the snapshots never "
+        "reach the scored set.",
+        "- History is short. The committed snapshots only go back to 2018, so early targets train "
+        "on very little. The local backfill to 2005 has not run; rerun this after it does.",
+        "- Ages are imputed (27.0) for NPB and KBO rows until the age refresh runs, so age "
+        "adjustment is a no-op for those endpoints and aging differences are absorbed into the "
+        "factor and the residual spread.",
+        f"- Park factors are empty until NPB and KBO game logs are scraped: {park_pairs} scored "
+        "pair(s) had a park adjustment. Park effects are therefore inside the error here.",
+        "- No fielding or defense data is used here; only rate stats (wOBA, FIP and components) are "
+        "scored. Grades, WAR and dollars are not validated by this run.",
+        "- Selection: only players who reached enough MLB playing time appear. This is not a "
+        "promotion, injury or playing-time model, and survivors tend to be the better performers.",
+        "- Leakage control is by destination season (`to_season < T`). The snapshots are "
+        "retrospective, not as-of archives, and bootstrap intervals resample rows rather than "
+        "player clusters (a player can appear in several training seasons).",
+        "- Pooled n counts each exported player-season once per stat; a player with several "
+        "MLB-adjacent seasons can appear in more than one target.",
+        "",
+    ]
+    return "\n".join(lines)

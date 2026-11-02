@@ -330,3 +330,87 @@ def test_build_leaderboard_attaches_posting_class_in_file_order_with_board_metri
     assert second["wrc_plus"] == 131.4
     assert second["grade"] == 60.0
     assert second["dollars_high"] == 36_000_000.0
+
+
+# ---------------------------------------------------------------------------
+# international_validation block
+# ---------------------------------------------------------------------------
+
+load_international_validation = _EXPORT_DEMO.load_international_validation
+
+
+def _intl_payload(league: str, *, data_mode: str = "real", verdict: str = "PASS") -> dict:
+    def metric(role: str, stat: str, n: int, mae: float, base: float, cov: float) -> dict:
+        return {
+            "league": league, "role": role, "stat": stat, "n": n, "mae": mae,
+            "rmse": mae * 1.2, "baseline_mae": base, "baseline_rmse": base * 1.2,
+            "coverage_80": cov,
+        }
+
+    return {
+        "metadata": {"data_mode": data_mode, "league": league},
+        "gate": {"verdict": verdict},
+        "pooled": [
+            metric("batter", "woba", 41, 0.021234, 0.026789, 0.7804),
+            metric("batter", "iso", 41, 0.04, 0.05, 0.8),
+            metric("pitcher", "fip", 33, 0.5123456, 0.6234567, 0.8123),
+        ],
+    }
+
+
+def _write_intl(directory: Path, league: str, **kwargs) -> None:
+    import json
+
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"international-rolling-{league.lower()}.json").write_text(
+        json.dumps(_intl_payload(league, **kwargs))
+    )
+
+
+def test_load_international_validation_missing_dir_or_files_is_none(tmp_path: Path) -> None:
+    assert load_international_validation(tmp_path / "absent") is None
+    (tmp_path / "empty").mkdir()
+    assert load_international_validation(tmp_path / "empty") is None
+
+
+def test_load_international_validation_returns_compact_gated_rows(tmp_path: Path) -> None:
+    _write_intl(tmp_path, "NPB")
+    _write_intl(tmp_path, "KBO", verdict="INSUFFICIENT")
+    rows = load_international_validation(tmp_path)
+
+    assert [(r["league"], r["role"], r["stat"]) for r in rows] == [
+        ("KBO", "batter", "woba"), ("KBO", "pitcher", "fip"),
+        ("NPB", "batter", "woba"), ("NPB", "pitcher", "fip"),
+    ]
+    npb_woba = rows[2]
+    assert npb_woba == {
+        "league": "NPB", "role": "batter", "stat": "woba", "n": 41, "mae": 0.0212,
+        "baseline_mae": 0.0268, "coverage_80": 0.78, "gate": "PASS",
+    }
+    assert rows[3]["mae"] == 0.512 and rows[3]["baseline_mae"] == 0.623
+    assert rows[0]["gate"] == "INSUFFICIENT"
+
+
+def test_load_international_validation_skips_non_real_payloads(tmp_path: Path) -> None:
+    _write_intl(tmp_path, "NPB", data_mode="synthetic")
+    assert load_international_validation(tmp_path) is None
+
+
+def test_build_backtest_attaches_international_validation_only_when_given() -> None:
+    backtest = {
+        "metadata": {"data_mode": "real"},
+        "metrics": [
+            {"role": "batter", "stat": "woba", "n": 2, "mae": 0.02, "rmse": 0.03,
+             "baseline_mae": 0.04, "baseline_rmse": 0.05, "coverage_80": 0.5}
+        ],
+        "detail": [],
+    }
+    rolling = {"metadata": {"target_seasons": []}, "summary": [], "pooled": []}
+
+    assert "international_validation" not in build_backtest(backtest, rolling, target_season=2025)
+    assert "international_validation" not in build_backtest(
+        backtest, rolling, target_season=2025, international_validation=None
+    )
+    rows = [{"league": "NPB", "role": "batter", "stat": "woba", "n": 12}]
+    out = build_backtest(backtest, rolling, target_season=2025, international_validation=rows)
+    assert out["international_validation"] == rows

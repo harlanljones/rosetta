@@ -29,6 +29,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 LEADERBOARD_PATH = ROOT / "data" / "outputs" / "leaderboard.json"
 ROLLING_PATH = ROOT / "data" / "outputs" / "historical-rolling" / "historical-rolling.json"
+INTERNATIONAL_DIR = ROOT / "data" / "outputs" / "international-rolling"
 POSTING_CLASS_PATH = ROOT / "data" / "reference" / "posting_class_2026.csv"
 POSTING_CLASS_COLUMNS = ("player_name", "league", "role", "note")
 POSTING_CLASS_ROLES = ("batter", "pitcher")
@@ -328,8 +329,54 @@ def build_leaderboard(
     }
 
 
+INTERNATIONAL_GATE_STATS = (("batter", "woba"), ("pitcher", "fip"))
+
+
+def load_international_validation(
+    directory: Path = INTERNATIONAL_DIR,
+) -> list[dict[str, Any]] | None:
+    """Compact pooled NPB/KBO validation rows from ``international-rolling-*.json``.
+
+    One row per league x gated stat (batter wOBA, pitcher FIP) with n, MAE,
+    baseline MAE, 80% coverage and the league's ship-gate verdict. Returns None
+    when no real-data international artifact exists, so the bundle omits the key.
+    """
+    if not directory.is_dir():
+        return None
+    rows: list[dict[str, Any]] = []
+    for path in sorted(directory.glob("international-rolling-*.json")):
+        payload = load_json(path)
+        meta = payload.get("metadata", {})
+        if meta.get("data_mode") != "real":
+            continue
+        league = meta.get("league")
+        verdict = payload.get("gate", {}).get("verdict")
+        for role, stat in INTERNATIONAL_GATE_STATS:
+            match = next(
+                (m for m in payload.get("pooled", []) if m.get("role") == role and m.get("stat") == stat),
+                None,
+            )
+            if match is None:
+                continue
+            row = {
+                "league": league,
+                "role": role,
+                "stat": stat,
+                "n": match.get("n"),
+                "mae": match.get("mae"),
+                "baseline_mae": match.get("baseline_mae"),
+                "coverage_80": match.get("coverage_80"),
+                "gate": verdict,
+            }
+            rows.append(_round_metric_record(row))
+    return rows or None
+
+
 def build_backtest(
-    backtest_raw: dict[str, Any], rolling_raw: dict[str, Any], target_season: int
+    backtest_raw: dict[str, Any],
+    rolling_raw: dict[str, Any],
+    target_season: int,
+    international_validation: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     metadata = backtest_raw.get("metadata", {})
     if metadata.get("data_mode") != "real":
@@ -406,7 +453,7 @@ def build_backtest(
         and metric.get("baseline_mae") is not None
         and metric["mae"] < metric["baseline_mae"]
     )
-    return {
+    bundle = {
         "data_mode": "real",
         f"target_season_{target_season}": {
             "metrics": metrics,
@@ -428,6 +475,9 @@ def build_backtest(
         },
         "player_predictions": player_rows,
     }
+    if international_validation:
+        bundle["international_validation"] = international_validation
+    return bundle
 
 
 def _analysis_row(row: dict[str, Any], target_season: int) -> dict[str, Any]:
@@ -746,7 +796,12 @@ def main() -> None:
 
     posting_class = load_posting_class(args.posting_class)
     leaderboard_out = build_leaderboard(leaderboard_raw, posting_class=posting_class)
-    backtest_out = build_backtest(backtest_raw, rolling_raw, args.target_season)
+    backtest_out = build_backtest(
+        backtest_raw,
+        rolling_raw,
+        args.target_season,
+        international_validation=load_international_validation(),
+    )
     analysis_out = build_analysis(rolling_raw)
     meta_out = build_meta(
         leaderboard_raw,

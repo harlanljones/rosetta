@@ -218,6 +218,85 @@ def historical_rolling_cmd(
         rprint(f"  {kind}: {path}")
 
 
+@app.command("international-rolling")
+def international_rolling_cmd(
+    league: str = typer.Option(..., help="International league to validate: NPB or KBO"),
+    targets: str = typer.Option("2019-2026", help="Target MLB seasons, e.g. 2019-2026 or 2022,2024"),
+    snapshots: Path = typer.Option(SNAPSHOT_DIR, help="Real normalized snapshot directory"),
+    boot: int = typer.Option(250, help="Bootstrap resamples per fitted factor"),
+    seed: int = typer.Option(42, help="Deterministic bootstrap seed"),
+    min_pa: float = typer.Option(80.0, help="Minimum source and target batter PA"),
+    min_ip: float = typer.Option(30.0, help="Minimum source and target pitcher IP"),
+    estimator: str = typer.Option(
+        "ratio_of_means", help="Link estimator: ratio_of_means (default) or mean_ratio"
+    ),
+    out_dir: Path = typer.Option(OUTPUT_DIR / "international-rolling", help="Artifact directory"),
+) -> None:
+    """Refit per target season and score NPB/KBO exports on their first MLB season."""
+    from rosetta.backtest.historical import (
+        INTERNATIONAL_EVAL_LEAGUES,
+        run_international_rolling,
+        write_international_report,
+    )
+    from rosetta.ingest.statsapi import parse_season_spec
+
+    league = league.strip().upper()
+    if league not in INTERNATIONAL_EVAL_LEAGUES:
+        raise typer.BadParameter(
+            f"expected one of {', '.join(INTERNATIONAL_EVAL_LEAGUES)}", param_hint="--league"
+        )
+    try:
+        seasons = parse_season_spec(targets)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--targets") from exc
+    try:
+        payload = run_international_rolling(
+            snapshots,
+            league=league,
+            target_seasons=seasons,
+            n_boot=boot,
+            seed=seed,
+            min_pa=min_pa,
+            min_ip=min_ip,
+            estimator=estimator,
+        )
+        paths = write_international_report(payload, out_dir)
+    except (FileNotFoundError, ValueError, KeyError, RuntimeError) as exc:
+        rprint(f"[red]International rolling validation unavailable:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    metadata = payload["metadata"]
+    rprint(
+        f"[green]International rolling ({league} -> MLB):[/green] targets {seasons[0]}-{seasons[-1]}; "
+        f"scored {metadata['counts']['targets_scored']}, skipped {metadata['counts']['targets_skipped']}; "
+        f"detail rows {metadata['counts']['detail_rows']}"
+    )
+    for item in metadata["skipped"]:
+        role = f" ({item['role']})" if item.get("role") else ""
+        rprint(f"  [yellow]skipped {item['target_season']}{role}:[/yellow] {item['reason']}")
+
+    pooled = [r for r in payload["pooled"] if r["stat"] in {"woba", "fip"}]
+    if pooled:
+        table = Table(title=f"{league} pooled headline metrics")
+        for column in ("role", "stat", "n", "mae", "baseline_mae", "coverage_80"):
+            table.add_column(column)
+        for row in pooled:
+            table.add_row(
+                str(row["role"]), str(row["stat"]), str(row["n"]),
+                f"{float(row['mae']):.4f}", f"{float(row['baseline_mae']):.4f}",
+                f"{float(row['coverage_80']) * 100:.1f}%",
+            )
+        rprint(table)
+
+    gate = payload["gate"]
+    colour = {"PASS": "green", "FAIL": "red", "INSUFFICIENT": "yellow"}[gate["verdict"]]
+    rprint(f"[{colour}]Ship gate {league}: {gate['verdict']}[/{colour}]")
+    for row in gate["failing"]:
+        rprint(f"  {row['status']} {row['role']} {row['stat']} (n={row['n']}): {'; '.join(row['reasons'])}")
+    for kind, path in paths.items():
+        rprint(f"  {kind}: {path}")
+
+
 @app.command("generate-snapshots")
 def generate_snapshots_cmd(seed: int = 42) -> None:
     """Write synthetic offline snapshots for CI/demo."""
