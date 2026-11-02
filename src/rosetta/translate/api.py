@@ -17,6 +17,11 @@ from rosetta.models.grades import (
     grade_pitcher_line,
     pitcher_innings,
 )
+from rosetta.models.park import (
+    load_runs_park_factors,
+    lookup_runs_park_factor,
+    neutralize_line_runs,
+)
 from rosetta.models.role import apply_role_shift, detect_role, role_shift
 from rosetta.schema import League, Role, TranslationResult
 
@@ -44,8 +49,14 @@ def translate_line(
     to_league: str = "MLB",
     target_pitch_role: str | None = None,
     constants: MlbConstants | None = None,
+    park_factors: pd.DataFrame | None = None,
 ) -> TranslationResult:
     """Translate one normalized season line to the target league.
+
+    ``park_factors`` (runs park factors from game logs, see
+    ``rosetta.models.park``) neutralizes half the park effect on NPB/KBO source
+    lines for their league-team-season, before league factors. Absent or empty
+    frames, and missing team-seasons, leave the line untouched.
 
     When ``constants`` is given, also fill wRC+ / FIP-, 20-80 grade, WAR and
     dollars (each with low/high) at default playing time. Otherwise those
@@ -55,6 +66,10 @@ def translate_line(
         line = pd.Series(line)
     role = str(line.get("role", "batter"))
     src = from_league or str(line["league"])
+    if park_factors is not None and not park_factors.empty:
+        pf = lookup_runs_park_factor(park_factors, src, line.get("team"), line.get("season"))
+        if pf is not None:
+            line = neutralize_line_runs(line, pf, role)
     stats = HITTER_STATS if role == "batter" else PITCHER_STATS
     path = model.path(src, to_league)
 
@@ -224,6 +239,7 @@ def translate(
     to_league: str = "MLB",
     target_pitch_role: str | None = None,
     constants: MlbConstants | None = None,
+    park_factors: pd.DataFrame | None = None,
 ) -> TranslationResult:
     """Public API: translate a player-season from `from_league` to MLB (default).
 
@@ -246,6 +262,8 @@ def translate(
         if sub.empty:
             raise LookupError(f"No season {season} for {player!r} in {from_league}")
     line = sub.sort_values("season").iloc[-1]
+    if park_factors is None:
+        park_factors = load_runs_park_factors(snapshot_dir)
     return translate_line(
         line,
         model=model,
@@ -253,6 +271,7 @@ def translate(
         to_league=to_league,
         target_pitch_role=target_pitch_role,
         constants=constants,
+        park_factors=park_factors,
     )
 
 

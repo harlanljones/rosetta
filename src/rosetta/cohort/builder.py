@@ -13,7 +13,12 @@ from pathlib import Path
 import pandas as pd
 
 from rosetta.ingest.loaders import classify_direction, load_all_seasons, load_transfers
-from rosetta.models.park import neutralize
+from rosetta.models.park import (
+    load_runs_park_factors,
+    lookup_runs_park_factor,
+    neutralize,
+    neutralize_line_runs,
+)
 from rosetta.paths import SNAPSHOT_DIR
 
 HITTER_STATS = ["bb_pct", "k_pct", "iso", "babip", "hr_pct", "woba", "pa"]
@@ -48,6 +53,18 @@ def _park_neutralize_line(line: pd.Series, *, rate_stats: tuple[str, ...]) -> pd
     return out
 
 
+def _runs_park_neutralize(
+    line: pd.Series, park_factors: pd.DataFrame | None, role: str
+) -> pd.Series:
+    """Half-effect runs park neutralization for NPB/KBO lines (no-op otherwise)."""
+    if park_factors is None or park_factors.empty:
+        return line
+    pf = lookup_runs_park_factor(
+        park_factors, line.get("league"), line.get("team"), line.get("season")
+    )
+    return neutralize_line_runs(line, pf, role)
+
+
 def _with_uuid_index(
     df: pd.DataFrame, crosswalk: dict[str, str]
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -74,8 +91,12 @@ def pair_seasons(
     pitchers: pd.DataFrame,
     *,
     id_crosswalk: dict[str, str] | None = None,
+    park_factors: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Join pre/post season lines onto each transfer row.
+
+    ``park_factors`` (runs park factors from game logs) is applied to NPB/KBO
+    endpoints only, when a league-team-season factor exists.
 
     When `id_crosswalk` is provided and a direct (player_id, season, league)
     lookup fails, the function retries via Chadwick `key_uuid` mapping.
@@ -133,6 +154,8 @@ def pair_seasons(
         else:
             pre = _park_neutralize_line(pre, rate_stats=_ERA_STATS)
             post = _park_neutralize_line(post, rate_stats=_ERA_STATS)
+        pre = _runs_park_neutralize(pre, park_factors, role)
+        post = _runs_park_neutralize(post, park_factors, role)
         direction = rec.get("direction")
         if direction is None or pd.isna(direction) or not str(direction).strip():
             direction = classify_direction(rec["from_league"], rec["to_league"])
@@ -188,7 +211,10 @@ def build_cohort(
         root = Path(snapshot_dir) if snapshot_dir else SNAPSHOT_DIR
         crosswalk = build_id_crosswalk(register, kbo_foreign_map_path=root / "kbo_foreign_map.csv")
 
-    paired = pair_seasons(transfers, batters, pitchers, id_crosswalk=crosswalk)
+    park_factors = load_runs_park_factors(snapshot_dir)
+    paired = pair_seasons(
+        transfers, batters, pitchers, id_crosswalk=crosswalk, park_factors=park_factors
+    )
     if paired.empty:
         return paired
 
