@@ -46,8 +46,8 @@ Status: approved plan (Harlan, 2026-11-01), spec v1. Plan of record:
 - D5. Reference constants (wOBA scale, lg wOBA, R/PA, runs per win, lg FIP,
   FIP constant, $/WAR) live in a checked-in table
   `data/reference/mlb_constants.csv` with a `source` column. lg wOBA and lg FIP
-  are computed from the MLB snapshots when the table lacks a season. The $/WAR
-  value is NOT filled by this spec; Harlan picks it. Until then dollars render as
+  are computed from the MLB snapshots when the table lacks a season. Pitcher replacement level (`pitcher_repl_r9`) and the $/WAR
+  value are NOT filled by this spec; Harlan picks it. Until then dollars render as
   "n/a" and the code path is tested with fixture constants.
 
 ## Work packages
@@ -178,7 +178,8 @@ statsapi.mlb.com. These run where the sites are reachable:
 - L2 Fielding scrapers for NPB and KBO (position, games, PO, A, E, innings)
   into the WP0 columns; a range-based `def_runs` (plays made per 9 vs league at
   position, times run value) with fixtures.
-- L3 `make live-data` (2005-2026, ages on), fill `kbo_foreign_map.csv`,
+- L3 `rosetta fetch-chadwick` (the register is gitignored; without it the cohort has
+  no NPB/KBO pairs at all), `make live-data` (2005-2026, ages on), fill `kbo_foreign_map.csv`,
   `rosetta generate-transfers`, `rosetta check-snapshots`, `make factors`.
 - L4 `rosetta international-rolling` for NPB and KBO; commit the generated
   results doc; rebuild showcase data.

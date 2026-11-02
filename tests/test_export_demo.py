@@ -204,11 +204,15 @@ POSTING_CLASS_PATH = _EXPORT_DEMO.POSTING_CLASS_PATH
 POSTING_CLASS_HEADER = "player_name,league,role,note"
 
 
-def test_shipped_posting_class_file_is_header_only() -> None:
+def test_shipped_posting_class_file_loads_with_sato_first() -> None:
     lines = POSTING_CLASS_PATH.read_text().strip().splitlines()
 
-    assert lines == [POSTING_CLASS_HEADER]
-    assert load_posting_class(POSTING_CLASS_PATH) == []
+    assert lines[0] == POSTING_CLASS_HEADER
+    entries = load_posting_class(POSTING_CLASS_PATH)
+    assert entries, "shipped posting class should not be empty"
+    first = entries[0]
+    name = first["player_name"] if isinstance(first, dict) else first.player_name
+    assert name == "Sato, Teruaki"
 
 
 def test_load_posting_class_keeps_file_order_and_strips_fields(tmp_path: Path) -> None:
