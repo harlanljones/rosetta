@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import math
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -15,6 +16,51 @@ ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / "data" / "outputs" / "leaderboard.json"
 SHOWCASE_BUNDLE = ROOT / "data" / "outputs" / "demo"
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+
+NA = "n/a"
+
+
+def _is_missing(value: object) -> bool:
+    if value is None:
+        return True
+    try:
+        return math.isnan(float(value))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return True
+
+
+def _fmt_num(value: object, digits: int) -> str:
+    """Fixed-precision number, or "n/a" when the grade or WAR input is unavailable."""
+    if _is_missing(value):
+        return NA
+    return f"{float(value):.{digits}f}"  # type: ignore[arg-type]
+
+
+def _fmt_band(low: object, high: object, digits: int) -> str:
+    if _is_missing(low) or _is_missing(high):
+        return NA
+    return f"{_fmt_num(low, digits)}–{_fmt_num(high, digits)}"
+
+
+def _fmt_money(value: object) -> str:
+    """Dollar value in millions; "n/a" until a $/WAR constant exists."""
+    if _is_missing(value):
+        return NA
+    return f"${float(value) / 1_000_000:,.1f}M"  # type: ignore[arg-type]
+
+
+def _fmt_money_band(low: object, high: object) -> str:
+    if _is_missing(low) or _is_missing(high):
+        return NA
+    return f"{_fmt_money(low)}–{_fmt_money(high)}"
+
+
+TEMPLATES.env.globals.update(
+    fmt_num=_fmt_num,
+    fmt_band=_fmt_band,
+    fmt_money=_fmt_money,
+    fmt_money_band=_fmt_money_band,
+)
 
 app = FastAPI(title="Rosetta MLE Leaderboard", version="0.1.0")
 

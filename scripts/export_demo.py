@@ -17,6 +17,7 @@ silently falling back to synthetic fixtures.
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import subprocess
@@ -28,6 +29,9 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 LEADERBOARD_PATH = ROOT / "data" / "outputs" / "leaderboard.json"
 ROLLING_PATH = ROOT / "data" / "outputs" / "historical-rolling" / "historical-rolling.json"
+POSTING_CLASS_PATH = ROOT / "data" / "reference" / "posting_class_2026.csv"
+POSTING_CLASS_COLUMNS = ("player_name", "league", "role", "note")
+POSTING_CLASS_ROLES = ("batter", "pitcher")
 
 # Rounding precision by field-name suffix/prefix, applied to every float in
 # the leaderboard/backtest payloads to keep output small and readable.
@@ -144,7 +148,88 @@ def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text())
 
 
-def build_leaderboard(raw: dict[str, Any]) -> dict[str, Any]:
+# Board fields copied onto each posting-class entry (null when not on the board).
+POSTING_CLASS_METRIC_FIELDS = (
+    "woba",
+    "woba_low",
+    "woba_high",
+    "fip",
+    "fip_low",
+    "fip_high",
+    "wrc_plus",
+    "wrc_plus_low",
+    "wrc_plus_high",
+    "fip_minus",
+    "fip_minus_low",
+    "fip_minus_high",
+    "grade",
+    "grade_low",
+    "grade_high",
+    "war",
+    "war_low",
+    "war_high",
+    "dollars",
+    "dollars_low",
+    "dollars_high",
+)
+
+
+def load_posting_class(path: Path = POSTING_CLASS_PATH) -> list[dict[str, str]]:
+    """Read the hand-filled 2026-27 posting class, keeping the file's row order.
+
+    A missing or header-only file gives an empty list, which hides the panel.
+    The header must match ``POSTING_CLASS_COLUMNS`` exactly.
+    """
+    if not path.exists():
+        return []
+    rows: list[dict[str, str]] = []
+    with path.open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        if tuple(reader.fieldnames or ()) != POSTING_CLASS_COLUMNS:
+            raise SystemExit(f"{path}: header must be {','.join(POSTING_CLASS_COLUMNS)}")
+        for raw in reader:
+            row = {column: (raw.get(column) or "").strip() for column in POSTING_CLASS_COLUMNS}
+            if not row["player_name"]:
+                continue
+            if row["role"] not in POSTING_CLASS_ROLES:
+                raise SystemExit(
+                    f"{path}: role {row['role']!r} for {row['player_name']!r} "
+                    f"must be one of {', '.join(POSTING_CLASS_ROLES)}"
+                )
+            rows.append(row)
+    return rows
+
+
+def _attach_board_metrics(
+    posting_class: list[dict[str, str]], boards: dict[str, list[dict[str, Any]]]
+) -> list[dict[str, Any]]:
+    """Keep file order; copy grade-family metrics from the matching board row by name and role."""
+    out: list[dict[str, Any]] = []
+    for entry in posting_class:
+        wanted = entry["player_name"].casefold()
+        match = next(
+            (
+                row for row in boards.get(entry["role"], [])
+                if str(row.get("player_name", "")).strip().casefold() == wanted
+            ),
+            None,
+        )
+        record: dict[str, Any] = {
+            "player_name": entry["player_name"],
+            "league": entry["league"],
+            "role": entry["role"],
+            "note": entry["note"],
+            "on_board": match is not None,
+        }
+        for field in POSTING_CLASS_METRIC_FIELDS:
+            record[field] = match.get(field) if match is not None else None
+        out.append(record)
+    return out
+
+
+def build_leaderboard(
+    raw: dict[str, Any], posting_class: list[dict[str, str]] | None = None
+) -> dict[str, Any]:
     data_mode = raw.get("data_mode")
     if data_mode != "real":
         raise SystemExit(
@@ -197,6 +282,22 @@ def build_leaderboard(raw: dict[str, Any]) -> dict[str, Any]:
         "mle_fip",
         "mle_fip_low",
         "mle_fip_high",
+        "position",
+        "wrc_plus",
+        "wrc_plus_low",
+        "wrc_plus_high",
+        "fip_minus",
+        "fip_minus_low",
+        "fip_minus_high",
+        "grade",
+        "grade_low",
+        "grade_high",
+        "war",
+        "war_low",
+        "war_high",
+        "dollars",
+        "dollars_low",
+        "dollars_high",
     )
     zero_synthetic_checked = 0
     for role, rows in sorted(raw.get("boards", {}).items()):
@@ -223,6 +324,7 @@ def build_leaderboard(raw: dict[str, Any]) -> dict[str, Any]:
         "data_mode": data_mode,
         "source_counts": raw.get("source_counts", {}),
         "boards": boards_out,
+        "posting_class": _attach_board_metrics(posting_class or [], boards_out),
     }
 
 
@@ -624,6 +726,12 @@ def main() -> None:
         default=ROOT / "data" / "outputs" / "demo",
         help="Output directory for the exported demo bundle.",
     )
+    parser.add_argument(
+        "--posting-class",
+        type=Path,
+        default=POSTING_CLASS_PATH,
+        help="Hand-filled 2026-27 posting class CSV (header-only means no panel).",
+    )
     args = parser.parse_args()
 
     backtest_path = ROOT / "data" / "outputs" / f"historical-backtest-{args.target_season}" / "historical-backtest.json"
@@ -636,7 +744,8 @@ def main() -> None:
     out_dir: Path = args.out
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    leaderboard_out = build_leaderboard(leaderboard_raw)
+    posting_class = load_posting_class(args.posting_class)
+    leaderboard_out = build_leaderboard(leaderboard_raw, posting_class=posting_class)
     backtest_out = build_backtest(backtest_raw, rolling_raw, args.target_season)
     analysis_out = build_analysis(rolling_raw)
     meta_out = build_meta(
@@ -660,7 +769,8 @@ def main() -> None:
         f"[export_demo] wrote {out_dir} "
         f"({total_bytes:,} bytes total; leaderboard {n_batter}B/{n_pitcher}P rows; "
         f"backtest players {n_woba_players} wOBA / {n_fip_players} FIP; "
-        f"analysis rows {analysis_out['scope']['player_stat_rows']})"
+        f"analysis rows {analysis_out['scope']['player_stat_rows']}; "
+        f"posting class {len(leaderboard_out['posting_class'])})"
     )
 
 

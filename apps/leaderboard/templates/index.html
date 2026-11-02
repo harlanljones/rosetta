@@ -50,7 +50,9 @@
     .site-nav a, .deployment a { color: var(--accent-soft); text-decoration: none; }
     .site-nav a:hover, .site-nav a:focus-visible, .deployment a:hover, .deployment a:focus-visible { color: var(--text); text-decoration: underline; }
     main { max-width: 1100px; margin: 0 auto; padding: 0 1.5rem 3rem; }
-    .grid { display: grid; gap: 1.25rem; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+    .grid { display: grid; gap: 1.25rem; grid-template-columns: 1fr; }
+    .table-wrap { overflow-x: auto; }
+    .cell-band { display: block; color: var(--muted); font-size: 0.75rem; }
     .card {
       background: color-mix(in srgb, var(--card) 92%, black);
       border: 1px solid var(--border);
@@ -72,6 +74,7 @@
     .num { font-variant-numeric: tabular-nums; font-family: "IBM Plex Mono", ui-monospace, monospace; }
     .league { color: var(--accent); font-weight: 600; }
     .band { color: var(--muted); font-size: 0.8rem; }
+    td.num, th.num { white-space: nowrap; }
     .error { background: #3a1d1d; border: 1px solid #7a3030; padding: 1rem; border-radius: 10px; }
     .deployment {
       display: grid;
@@ -142,9 +145,10 @@
     <div class="grid">
       <section class="card">
         <h2>Hitters by MLE wOBA</h2>
+        <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>#</th><th>Player</th><th>Lg</th><th>wOBA</th><th>80% band</th></tr>
+            <tr><th>#</th><th>Player</th><th>Lg</th><th>wOBA</th><th>80% band</th><th>wRC+</th><th>20-80</th><th>WAR</th><th>$ value</th></tr>
           </thead>
           <tbody>
             {% for p in batters %}
@@ -154,18 +158,24 @@
               <td class="league">{{ p.from_league }}</td>
               <td class="num">{{ '%.3f'|format(p.woba or 0) }}</td>
               <td class="num band">{{ '%.3f'|format(p.woba_low or 0) }}–{{ '%.3f'|format(p.woba_high or 0) }}</td>
+              <td class="num">{{ fmt_num(p.get('wrc_plus'), 0) }}<span class="cell-band">{{ fmt_band(p.get('wrc_plus_low'), p.get('wrc_plus_high'), 0) }}</span></td>
+              <td class="num">{{ fmt_num(p.get('grade'), 0) }}</td>
+              <td class="num">{{ fmt_num(p.get('war'), 1) }}<span class="cell-band">{{ fmt_band(p.get('war_low'), p.get('war_high'), 1) }}</span></td>
+              <td class="num">{{ fmt_money(p.get('dollars')) }}<span class="cell-band">{{ fmt_money_band(p.get('dollars_low'), p.get('dollars_high')) }}</span></td>
             </tr>
             {% else %}
-            <tr><td colspan="5">No batters — run <code>make leaderboard</code></td></tr>
+            <tr><td colspan="9">No batters — run <code>make leaderboard</code></td></tr>
             {% endfor %}
           </tbody>
         </table>
+        </div>
       </section>
       <section class="card">
         <h2>Pitchers by MLE FIP</h2>
+        <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>#</th><th>Player</th><th>Lg</th><th>FIP</th><th>80% band</th></tr>
+            <tr><th>#</th><th>Player</th><th>Lg</th><th>FIP</th><th>80% band</th><th>FIP-</th><th>20-80</th><th>WAR</th><th>$ value</th></tr>
           </thead>
           <tbody>
             {% for p in pitchers %}
@@ -175,12 +185,17 @@
               <td class="league">{{ p.from_league }}</td>
               <td class="num">{{ '%.2f'|format(p.fip or 0) }}</td>
               <td class="num band">{{ '%.2f'|format(p.fip_low or 0) }}–{{ '%.2f'|format(p.fip_high or 0) }}</td>
+              <td class="num">{{ fmt_num(p.get('fip_minus'), 0) }}<span class="cell-band">{{ fmt_band(p.get('fip_minus_low'), p.get('fip_minus_high'), 0) }}</span></td>
+              <td class="num">{{ fmt_num(p.get('grade'), 0) }}</td>
+              <td class="num">{{ fmt_num(p.get('war'), 1) }}<span class="cell-band">{{ fmt_band(p.get('war_low'), p.get('war_high'), 1) }}</span></td>
+              <td class="num">{{ fmt_money(p.get('dollars')) }}<span class="cell-band">{{ fmt_money_band(p.get('dollars_low'), p.get('dollars_high')) }}</span></td>
             </tr>
             {% else %}
-            <tr><td colspan="5">No pitchers — run <code>make leaderboard</code></td></tr>
+            <tr><td colspan="9">No pitchers — run <code>make leaderboard</code></td></tr>
             {% endfor %}
           </tbody>
         </table>
+        </div>
       </section>
     </div>
     <section class="deployment" id="deployment" aria-labelledby="deployment-title">
@@ -222,6 +237,9 @@
     {% if data_mode == "real" %}Only rows ingested from live data sources are shown. {% endif %}
     Uncertainty bands come from bootstrap of the transferred-player cohort.
     Thin leagues (CPBL/Cuba) intentionally show wide intervals.
+    wRC+ and FIP- are relative to MLB reference constants; 20-80 grades use
+    the qualified-player reference; WAR uses fixed playing time. "n/a" means
+    the input or constant is not available yet.
     <a href="/api/leaderboard">JSON API</a>
     <a href="/api/leaderboard.csv">CSV export</a>
   </footer>

@@ -43,6 +43,8 @@
     .num { font-variant-numeric: tabular-nums; font-family: "IBM Plex Mono", ui-monospace, monospace; }
     .league { color: var(--accent); font-weight: 600; }
     .band { color: var(--muted); font-size: 0.8rem; }
+    .cell-band { display: block; color: var(--muted); font-size: 0.75rem; }
+    .table-wrap { overflow-x: auto; }
     .empty { color: var(--muted); padding: 1rem 0; }
   </style>
 </head>
@@ -56,9 +58,10 @@
     </form>
     {% if searched %}
       {% if matches %}
+        <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>Player</th><th>Role</th><th>Lg</th><th>MLE</th><th>80% band</th></tr>
+            <tr><th>Player</th><th>Role</th><th>Lg</th><th>MLE</th><th>80% band</th><th>wRC+ / FIP-</th><th>20-80</th><th>WAR</th><th>$ value</th></tr>
           </thead>
           <tbody>
             {% for m in matches %}
@@ -69,14 +72,20 @@
               {% if m.role == "batter" %}
                 <td class="num">{{ '%.3f'|format(m.woba or 0) }} wOBA</td>
                 <td class="num band">{{ '%.3f'|format(m.woba_low or 0) }}–{{ '%.3f'|format(m.woba_high or 0) }}</td>
+                <td class="num">wRC+ {{ fmt_num(m.get('wrc_plus'), 0) }}<span class="cell-band">{{ fmt_band(m.get('wrc_plus_low'), m.get('wrc_plus_high'), 0) }}</span></td>
               {% else %}
                 <td class="num">{{ '%.2f'|format(m.fip or 0) }} FIP</td>
                 <td class="num band">{{ '%.2f'|format(m.fip_low or 0) }}–{{ '%.2f'|format(m.fip_high or 0) }}</td>
+                <td class="num">FIP- {{ fmt_num(m.get('fip_minus'), 0) }}<span class="cell-band">{{ fmt_band(m.get('fip_minus_low'), m.get('fip_minus_high'), 0) }}</span></td>
               {% endif %}
+              <td class="num">{{ fmt_num(m.get('grade'), 0) }}</td>
+              <td class="num">{{ fmt_num(m.get('war'), 1) }}<span class="cell-band">{{ fmt_band(m.get('war_low'), m.get('war_high'), 1) }}</span></td>
+              <td class="num">{{ fmt_money(m.get('dollars')) }}<span class="cell-band">{{ fmt_money_band(m.get('dollars_low'), m.get('dollars_high')) }}</span></td>
             </tr>
             {% endfor %}
           </tbody>
         </table>
+        </div>
       {% else %}
         <p class="empty">No matches for “{{ query }}”.</p>
       {% endif %}

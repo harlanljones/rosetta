@@ -15,6 +15,7 @@ from rosetta.cohort.builder import build_cohort
 from rosetta.ingest.generate_snapshots import build_snapshots
 from rosetta.ingest.loaders import load_all_seasons
 from rosetta.models.factors import fit_factor_model
+from rosetta.models.grades import load_constants
 from rosetta.paths import OUTPUT_DIR, SNAPSHOT_DIR, ensure_data_dirs
 from rosetta.translate.api import translate, translate_frame
 
@@ -363,6 +364,9 @@ def leaderboard_cmd(
     from rosetta.models.factors import LeagueFactorModel
 
     model = LeagueFactorModel.load(factors)
+    # Reference constants for wRC+ / FIP- / grade / WAR / $. A missing constant
+    # serializes as null in the board rows rather than failing the build.
+    constants = load_constants(season, snapshot_dir=snapshots)
     boards = {}
     source_counts = {}
     for role, min_pt, pt_col in (("batter", min_pa, "pa"), ("pitcher", min_ip, "ip")):
@@ -378,7 +382,7 @@ def leaderboard_cmd(
         if df.empty:
             boards[role] = []
             continue
-        translated = translate_frame(df, model=model)
+        translated = translate_frame(df, model=model, constants=constants)
         for column in ("source", "is_synthetic", "team"):
             if column in df.columns:
                 translated[column] = df[column].to_numpy()
@@ -393,6 +397,16 @@ def leaderboard_cmd(
                 "season": season,
                 "data_mode": "all" if include_synthetic else "real",
                 "source_counts": source_counts,
+                "grade_constants": {
+                    "season": season,
+                    "source": constants.source or None,
+                    "wrc_plus_available": constants.woba_scale is not None
+                    and constants.lg_woba is not None
+                    and constants.lg_r_pa is not None,
+                    "fip_minus_available": constants.lg_fip is not None,
+                    "dollars_available": constants.dollars_per_war is not None,
+                    "notes": constants.notes,
+                },
                 "boards": boards,
             },
             indent=2,
